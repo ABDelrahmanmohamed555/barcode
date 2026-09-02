@@ -4,23 +4,39 @@ import sys
 import threading
 from datetime import datetime
 
-# تأكد أن المجلد الأب في المسار لاستيراد المشروع الأساسي
+# تأكد أن المجلد الأب في المسار لاستيراد المشروع الأساسي — يدعم داخل cashier/prot أو sibling ../prot
 BASE_PARENT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_PARENT not in sys.path:
     sys.path.insert(0, BASE_PARENT)
+# أضف أيضاً مجلد cashier نفسه لو prot كـ sibling (Desktop/prot + Desktop/cashier)
+for _cand in [os.path.join(BASE_PARENT, "cashier"), os.path.join(os.path.dirname(BASE_PARENT), "cashier")]:
+    if os.path.exists(_cand) and _cand not in sys.path:
+        sys.path.insert(0, _cand)
+        # أيضاً أضف الأب لهذا المسار ليجد prot كـ package
+        _par = os.path.dirname(_cand)
+        if _par not in sys.path:
+            sys.path.insert(0, _par)
 
 import customtkinter as ctk
 from customtkinter import CTkImage
 from PIL import Image
 
-from prot.config import COLORS, FONT_ARABIC, FONT_ARABIC_BOLD, FONT_HEADER, FONT_BODY, FONT_BODY_BOLD, FONT_SMALL, APP_NAME, CATEGORIES, BASE_DIR
+from prot.config import COLORS, FONT_ARABIC, FONT_ARABIC_BOLD, FONT_HEADER, FONT_BODY, FONT_BODY_BOLD, FONT_SMALL, APP_NAME, CATEGORIES
 from prot.db.database import init_db, add_product, get_all_products, update_product, delete_product, get_product_by_id, get_product_by_barcode, add_sale, create_sale_group, is_sales_enabled, set_sales_enabled, get_all_sales, get_sales_count, is_invoice_enabled, set_invoice_enabled, is_user_invoice_enabled, set_user_invoice_enabled, get_cart_font_scale, set_cart_font_scale
 from prot.barcode_utils import generate_barcode_image, generate_product_sticker
-from arabic_entry import ArabicEntry
-from config import BASE_DIR as MAIN_BASE
-from utils import reshape_arabic, save_window_state, restore_or_center, apply_gold_cursor, make_undecorated, enable_resize, make_optionmenu_values
-from dropdown import AnimatedOptionMenu
-from titlebar import TitleBar
+# استيراد cashier modules مع دعم المسارين
+try:
+    from arabic_entry import ArabicEntry
+    from config import BASE_DIR as MAIN_BASE
+    from utils import reshape_arabic, save_window_state, restore_or_center, apply_gold_cursor, make_undecorated, enable_resize, make_optionmenu_values
+    from dropdown import AnimatedOptionMenu
+    from titlebar import TitleBar
+except ImportError:
+    from cashier.arabic_entry import ArabicEntry
+    from cashier.config import BASE_DIR as MAIN_BASE
+    from cashier.utils import reshape_arabic, save_window_state, restore_or_center, apply_gold_cursor, make_undecorated, enable_resize, make_optionmenu_values
+    from cashier.dropdown import AnimatedOptionMenu
+    from cashier.titlebar import TitleBar
 
 
 class ProtWindow(ctk.CTk):
@@ -476,22 +492,39 @@ class ProtWindow(ctk.CTk):
         self._preview_job = self.after(400, self._update_barcode_preview)
 
     def _filter_price(self, *_):
+        # منع تكرار الاستدعاء أثناء التعديل البرمجي
+        if getattr(self, "_filtering_price", False):
+            return
         txt = self.price_entry.get()
         allowed = "".join(c for c in txt if c.isdigit() or c in ".,")
         allowed = allowed.replace(",", ".")
         if allowed.count(".") > 1:
             parts = allowed.split(".")
-        allowed = parts[0] + "." + "".join(parts[1:])
+            allowed = parts[0] + "." + "".join(parts[1:])
         if allowed != txt:
-            self.price_entry.delete(0, "end")
-        self.price_entry.insert(0, allowed)
+            self._filtering_price = True
+            try:
+                cur = self.price_entry.get()
+                if cur != allowed:
+                    self.price_entry.delete(0, "end")
+                    self.price_entry.insert(0, allowed)
+            finally:
+                self.after(10, lambda: setattr(self, "_filtering_price", False))
 
     def _filter_int(self, *_):
+        if getattr(self, "_filtering_int", False):
+            return
         txt = self.stock_entry.get()
         filt = "".join(c for c in txt if c.isdigit())
         if filt != txt:
-            self.stock_entry.delete(0, "end")
-        self.stock_entry.insert(0, filt)
+            self._filtering_int = True
+            try:
+                cur = self.stock_entry.get()
+                if cur != filt:
+                    self.stock_entry.delete(0, "end")
+                    self.stock_entry.insert(0, filt)
+            finally:
+                self.after(10, lambda: setattr(self, "_filtering_int", False))
 
     def _save_product(self):
         name = self.name_entry.get().strip()
@@ -504,16 +537,16 @@ class ProtWindow(ctk.CTk):
 
         if not name:
             self._toast(reshape_arabic("ادخل اسم المنتج"), COLORS["danger"])
-        return
+            return
         if not barcode:
             from prot.db.database import get_unique_barcode
-        barcode = get_unique_barcode()
+            barcode = get_unique_barcode()
         try:
             price_f = float(price)
             stock_i = int(stock)
         except ValueError:
             self._toast(reshape_arabic("السعر/المخزون غير صحيح"), COLORS["danger"])
-        return
+            return
         try:
             path = generate_barcode_image(barcode, name)
         except Exception:
@@ -571,18 +604,42 @@ class ProtWindow(ctk.CTk):
         desc = self.desc_entry.get().strip()
         if not name or not barcode:
             self._toast(reshape_arabic("اكمل البيانات"), COLORS["danger"])
-        return
+            return
+        # منع الضغط المتكرر أثناء الحفظ
         try:
-            path = generate_barcode_image(barcode, name)
+            self.update_btn.configure(state="disabled")
         except Exception:
-            path = None
-        ok = update_product(self._editing_id, name=name, category=category, price=price, stock=stock, description=desc, barcode=barcode, barcode_path=path)
-        if ok:
-            self._toast(reshape_arabic("تم التحديث"), COLORS["success"])
-            self._cancel_edit()
-            self._refresh_table()
-        else:
-            self._toast(reshape_arabic("فشل التحديث - الباركود مكرر؟"), COLORS["danger"])
+            pass
+        self._toast(reshape_arabic("جاري حفظ التعديل..."), COLORS["info"])
+        pid = self._editing_id
+        def worker():
+            try:
+                try:
+                    path = generate_barcode_image(barcode, name)
+                except Exception:
+                    path = None
+                ok = update_product(pid, name=name, category=category, price=price, stock=stock, description=desc, barcode=barcode, barcode_path=path)
+                err = ""
+            except Exception as e:
+                ok = False
+                err = str(e)
+            def on_done():
+                try:
+                    self.update_btn.configure(state="normal")
+                except Exception:
+                    pass
+                if ok:
+                    self._toast(reshape_arabic("تم التحديث"), COLORS["success"])
+                    self._cancel_edit()
+                    self._refresh_table()
+                else:
+                    msg = reshape_arabic("فشل التحديث - الباركود مكرر؟") if "UNIQUE" in err or "مكرر" in err else reshape_arabic(f"فشل التحديث: {err}"[:80])
+                    self._toast(msg, COLORS["danger"])
+            try:
+                self.after(0, on_done)
+            except Exception:
+                pass
+        threading.Thread(target=worker, daemon=True).start()
 
     def _cancel_edit(self):
         self._editing_id = None
@@ -632,10 +689,10 @@ class ProtWindow(ctk.CTk):
                 try:
                     ok = delete_product(pid)
                 except Exception as e:
-                        ok = False
-                        err = str(e)
+                    ok = False
+                    err = str(e)
                 else:
-                        err = ""
+                    err = ""
                 def on_done():
                     try:
                         win.destroy()
@@ -650,12 +707,12 @@ class ProtWindow(ctk.CTk):
                 else:
                     msg = reshape_arabic("فشل الحذف — قاعدة البيانات مشغولة، حاول ثانية") if "locked" in err.lower() else reshape_arabic("فشل الحذف — المنتج مرتبط بمبيعات؟")
                     self._toast(msg, COLORS["danger"])
-            try:
-                self.after(0, on_done)
-            except Exception:
-                pass
-        import threading
-        threading.Thread(target=worker, daemon=True).start()
+                try:
+                    self.after(0, on_done)
+                except Exception:
+                    pass
+            import threading
+            threading.Thread(target=worker, daemon=True).start()
 
         ctk.CTkButton(row, text=reshape_arabic("حذف"), font=FONT_BODY_BOLD, width=90, height=34, fg_color=COLORS["danger"], hover_color="#a83232", text_color="white",
                   command=do_delete).pack(side="left", padx=6)
@@ -719,7 +776,7 @@ class ProtWindow(ctk.CTk):
         prod = get_product_by_id(pid)
         if not prod:
             self._toast(reshape_arabic("المنتج غير موجود"), COLORS["danger"])
-        return
+            return
         self._toast(reshape_arabic("جاري طباعة الباركود..."), COLORS["info"])
         def worker():
             try:
@@ -728,7 +785,7 @@ class ProtWindow(ctk.CTk):
                 from printing import print_pil_image, printer_available
                 if not printer_available():
                     self.after(0, lambda: self._toast(reshape_arabic("الطابعة غير متصلة"), COLORS["warning"]))
-                return
+                    return
                 ok, msg = print_pil_image(img, copies=1)
                 self.after(0, lambda: self._toast(reshape_arabic(msg), COLORS["success"] if ok else COLORS["danger"]))
                 if ok and parent_win is not None:
@@ -737,7 +794,8 @@ class ProtWindow(ctk.CTk):
                     except Exception:
                         pass
             except Exception as e:
-                self.after(0, lambda: self._toast(reshape_arabic(f"خطأ الطباعة: {e}"), COLORS["danger"]))
+                err = str(e)
+                self.after(0, lambda err=err: self._toast(reshape_arabic(f"خطأ الطباعة: {err}"), COLORS["danger"]))
         threading.Thread(target=worker, daemon=True).start()
 
     # ==================== POS للمستخدم العادي (employee) - تم إكماله ====================
@@ -749,7 +807,12 @@ class ProtWindow(ctk.CTk):
         except Exception:
             pass
         scale = self._get_cart_scale()
-        fh = self._scaled_font(FONT_HEADER)
+        fh = self._scaled_font(FONT_HEADER, scale)
+        fb = self._scaled_font(FONT_BODY, scale)
+        fbb = self._scaled_font(FONT_BODY_BOLD, scale)
+        fs = self._scaled_font(FONT_SMALL, scale)
+        hdr_h = self._scaled_height(48, scale)
+        frame = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=10)
         fb = self._scaled_font(FONT_BODY)
         fbb = self._scaled_font(FONT_BODY_BOLD)
         fs = self._scaled_font(FONT_SMALL)
@@ -831,12 +894,12 @@ class ProtWindow(ctk.CTk):
         except Exception:
             pass
         scale = self._get_cart_scale()
-        fh = self._scaled_font(FONT_HEADER)
-        fb = self._scaled_font(FONT_BODY)
-        fbb = self._scaled_font(FONT_BODY_BOLD)
-        fs = self._scaled_font(FONT_SMALL)
-        hdr_h = self._scaled_height(48)
-        wrap = self._scaled_width(320)
+        fh = self._scaled_font(FONT_HEADER, scale)
+        fb = self._scaled_font(FONT_BODY, scale)
+        fbb = self._scaled_font(FONT_BODY_BOLD, scale)
+        fs = self._scaled_font(FONT_SMALL, scale)
+        hdr_h = self._scaled_height(48, scale)
+        wrap = self._scaled_width(320, scale)
         frame = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=10)
         frame.pack(fill="both", expand=True)
 
@@ -1011,14 +1074,20 @@ class ProtWindow(ctk.CTk):
             pass
         self.det_name.configure(text=reshape_arabic(prod.get("name","—")))
         self.det_barcode.configure(text=reshape_arabic(f"باركود: {prod.get('barcode','—')}"))
-        self.det_serial.configure(text=f"#{prod.get('id',0):04d}")
+        # الرقم التسلسلي الثابت 1..n (مطابق لجدول الأدمن) + الـ id الداخلي
+        try:
+            all_rows = get_all_products(search="")
+            seq = next((str(idx+1) for idx, ap in enumerate(all_rows) if ap["id"] == prod["id"]), str(prod.get('id',0)))
+            self.det_serial.configure(text=f"#{seq} — {prod.get('id',0):04d}")
+        except Exception:
+            self.det_serial.configure(text=f"#{prod.get('id',0):04d}")
         self.det_price.configure(text=reshape_arabic(f"{float(prod.get('price',0)):.2f} جنيه"))
         self.det_stock.configure(text=reshape_arabic(f"المتاح: {int(prod.get('stock',0))} قطعة"))
         qty_in_cart = 1
         for it in self._cart:
             if it["product"]["id"] == prod["id"]:
                 qty_in_cart = it["qty"]
-            break
+                break
         try:
             self.det_qty_entry.delete(0, "end")
             self.det_qty_entry.insert(0, str(qty_in_cart))
@@ -1035,9 +1104,9 @@ class ProtWindow(ctk.CTk):
     def _remove_cart_item(self, idx):
         if 0 <= idx < len(self._cart):
             prod = self._cart[idx]["product"]
-        del self._cart[idx]
-        self._refresh_pos_cart()
-        self._toast(reshape_arabic(f"تم حذف {prod['name']}"), COLORS["warning"])
+            del self._cart[idx]
+            self._refresh_pos_cart()
+            self._toast(reshape_arabic(f"تم حذف {prod['name']}"), COLORS["warning"])
 
     def _change_cart_qty(self, idx, delta):
         if not (0 <= idx < len(self._cart)):
@@ -1052,10 +1121,10 @@ class ProtWindow(ctk.CTk):
         new_qty = item["qty"] + delta
         if new_qty < 1:
             self._remove_cart_item(idx)
-        return
+            return
         if new_qty > avail:
             self._toast(reshape_arabic(f"المتاح {avail}"), COLORS["warning"])
-        return
+            return
         item["qty"] = new_qty
         self._refresh_pos_cart()
         if self._selected_product and self._selected_product["id"] == item["product"]["id"]:
@@ -1648,7 +1717,8 @@ class ProtWindow(ctk.CTk):
                     self.prot_backup_status.configure(text=reshape_arabic(msg[:80]), text_color=COLORS["success"] if ok else COLORS["danger"])
                 self.after(0, done)
             except Exception as e:
-                self.after(0, lambda: self.prot_backup_status.configure(text=reshape_arabic(f"خطأ: {e}"), text_color=COLORS["danger"]))
+                err = str(e)
+                self.after(0, lambda err=err: self.prot_backup_status.configure(text=reshape_arabic(f"خطأ: {err}"), text_color=COLORS["danger"]))
         threading.Thread(target=worker, daemon=True).start()
 
     def _start_prot_backup_scheduler(self):

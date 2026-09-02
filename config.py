@@ -6,9 +6,22 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "db", "products.db")
 BARCODES_DIR = os.path.join(BASE_DIR, "assets", "barcodes")
 IMAGES_DIR = os.path.join(BASE_DIR, "assets", "images")
-FONTS_DIR = os.path.join(os.path.dirname(BASE_DIR), "assets", "fonts")
-if not os.path.exists(FONTS_DIR):
+_CASHIER_CANDIDATES = [
+    os.path.join(os.path.dirname(BASE_DIR), "cashier", "assets", "fonts"),  # sibling: Desktop/prot -> Desktop/cashier
+    os.path.join(os.path.dirname(BASE_DIR), "assets", "fonts"),  # fallback Desktop/assets
+    os.path.join(BASE_DIR, "assets", "fonts"),  # prot/assets/fonts
+]
+FONTS_DIR = None
+for _cand in _CASHIER_CANDIDATES:
+    if os.path.exists(_cand):
+        FONTS_DIR = _cand
+        break
+if FONTS_DIR is None:
     FONTS_DIR = os.path.join(BASE_DIR, "assets", "fonts")
+# احتفظ بالمسار القديم كـ fallback إضافي لو كان prot داخل cashier/prot
+_alt = os.path.join(os.path.dirname(BASE_DIR), "assets", "fonts")
+if not os.path.exists(FONTS_DIR) and os.path.exists(_alt):
+    FONTS_DIR = _alt
 
 APP_NAME = "نظام المنتجات - الباركود"
 

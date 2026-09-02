@@ -9,10 +9,27 @@ import tkinter as tk
 import customtkinter as ctk
 from customtkinter import CTkImage
 from PIL import Image, ImageDraw, ImageTk
-from prot.config import FONT_TITLE, FONT_BODY, FONT_BODY_BOLD, FONT_SMALL, COLORS, BASE_DIR as PROT_BASE
-from prot.db.database import authenticate
-from utils import reshape_arabic, save_window_state, restore_or_center, apply_gold_cursor, make_undecorated, enable_resize
-from config import BASE_DIR as MAIN_BASE
+# محاولة استيراد prot كـ package أولاً ثم كـ standalone
+try:
+    from prot.config import FONT_TITLE, FONT_BODY, FONT_BODY_BOLD, FONT_SMALL, COLORS, BASE_DIR as PROT_BASE
+    from prot.db.database import authenticate
+except ImportError:
+    from config import FONT_TITLE, FONT_BODY, FONT_BODY_BOLD, FONT_SMALL, COLORS, BASE_DIR as PROT_BASE
+    from db.database import authenticate
+# أضف cashier للمسار لو sibling قبل الاستيراد
+for _cand in [os.path.join(BASE_PARENT, "cashier"), os.path.join(os.path.dirname(BASE_PARENT), "cashier")]:
+    if os.path.exists(_cand) and _cand not in sys.path:
+        sys.path.insert(0, _cand)
+        _par = os.path.dirname(_cand)
+        if _par not in sys.path:
+            sys.path.insert(0, _par)
+# دعم داخل أو sibling — جرب utils العادي ثم cashier.utils
+try:
+    from utils import reshape_arabic, save_window_state, restore_or_center, apply_gold_cursor, make_undecorated, enable_resize
+    from config import BASE_DIR as MAIN_BASE
+except ImportError:
+    from cashier.utils import reshape_arabic, save_window_state, restore_or_center, apply_gold_cursor, make_undecorated, enable_resize
+    from cashier.config import BASE_DIR as MAIN_BASE
 
 LOGO_PATH = os.path.join(MAIN_BASE, "icon.png")
 if not os.path.exists(LOGO_PATH):

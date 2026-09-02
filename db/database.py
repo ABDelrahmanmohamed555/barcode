@@ -379,7 +379,7 @@ def delete_product(pid):
         cur.execute("DELETE FROM products WHERE id=?", (pid,))
         conn.commit()
         ok = cur.rowcount > 0
-    except sqlite3.IntegrityError as e:
+    except sqlite3.IntegrityError:
         conn.rollback()
         ok = False
     except Exception:

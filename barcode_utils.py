@@ -1,7 +1,7 @@
 import os
 from PIL import Image, ImageDraw, ImageFont
 
-from prot.config import BARCODES_DIR, FONTS_DIR
+from prot.config import BASE_DIR, BARCODES_DIR, FONTS_DIR
 
 # محاولة استيراد python-barcode
 try:
@@ -71,9 +71,15 @@ def generate_barcode_image(barcode_value, product_name="", out_path=None):
                     draw = ImageDraw.Draw(new_img)
                     # رسم الاسم في المنتصف
                     try:
-                        # محاولة دعم عربي بسيط
-                        from utils import reshape_arabic
-                        disp = reshape_arabic(product_name)
+                        # محاولة دعم عربي بسيط — يدعم داخل cashier أو sibling
+                        disp = product_name
+                        for _cand in ["utils", "cashier.utils"]:
+                            try:
+                                mod = __import__(_cand, fromlist=["reshape_arabic"])
+                                disp = getattr(mod, "reshape_arabic")(product_name)
+                                break
+                            except Exception:
+                                continue
                     except Exception:
                         disp = product_name
                     # حساب عرض النص
@@ -152,9 +158,24 @@ def generate_product_sticker(product, copies=1):
     """إنشاء صورة ستيكر منتج متناسبة تماماً مع مقاس الستيكر في sticker_config.json
     تحتوي: اسم المنتج أعلى + باركود وسط + سعر أسفل. الحجم النهائي = مقاس الستيكر."""
     try:
-        # حمّل مقاس الستيكر من الإعدادات الأساسية
+        # حمّل مقاس الستيكر من الإعدادات الأساسية — يدعم داخل أو sibling
         import json
-        from config import BASE_DIR as MAIN_BASE
+        MAIN_BASE = None
+        for _cand in ["config", "cashier.config"]:
+            try:
+                mod = __import__(_cand, fromlist=["BASE_DIR"])
+                MAIN_BASE = getattr(mod, "BASE_DIR")
+                break
+            except Exception:
+                continue
+        if MAIN_BASE is None:
+            # fallback: حاول إيجاد cashier كـ sibling
+            for _cand_path in [os.path.join(os.path.dirname(BASE_DIR), "cashier"), os.path.join(os.path.dirname(os.path.dirname(BASE_DIR)), "cashier")]:
+                if os.path.exists(os.path.join(_cand_path, "assets", "sticker_config.json")):
+                    MAIN_BASE = _cand_path
+                    break
+        if MAIN_BASE is None:
+            raise FileNotFoundError("sticker_config not found")
         cfg_path = os.path.join(MAIN_BASE, "assets", "sticker_config.json")
         with open(cfg_path, "r", encoding="utf-8") as f:
             cfg = json.load(f)
@@ -187,6 +208,7 @@ def generate_product_sticker(product, copies=1):
         price_text = f"{float(price):.2f} جنيه" if str(price).strip() != "" else ""
     except Exception:
         price_text = str(price)
+    _ = price_text  # لإسكات pyflakes - السعر ملغى حسب الطلب `prot/barcode_utils.py:259`
 
     barcode_y = None
     barcode_bh = 0
@@ -272,8 +294,19 @@ def generate_product_sticker(product, copies=1):
         try:
             font_prod = _get_font(27, bold=True)
             try:
-                from sticker import _layout as _layp
-                lay_p = _layp(name)
+                # حاول استيراد _layout من cashier سواء كان prot داخل cashier أو sibling
+                _layp = None
+                for _cand in ["sticker", "cashier.sticker"]:
+                    try:
+                        mod = __import__(_cand, fromlist=["_layout"])
+                        _layp = getattr(mod, "_layout", None)
+                        if _layp:
+                            lay_p = _layp(name)
+                            break
+                    except Exception:
+                        continue
+                else:
+                    lay_p = {}
             except Exception:
                 lay_p = {}
             max_w = W - 12
