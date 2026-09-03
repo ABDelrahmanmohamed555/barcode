@@ -55,6 +55,7 @@ class ProtWindow(ctk.CTk):
         self._clock_timer = None
         self._prot_backup_timer = None
         self._editing_id = None
+        self._auto_save_job = None
         self._barcode_preview = None
         # POS للمستخدم العادي (employee)
         self._cart = []
@@ -279,9 +280,15 @@ class ProtWindow(ctk.CTk):
         # اسم المنتج
         self._create_field(body, "اسم المنتج", 0)
         self.name_entry = ArabicEntry(body, placeholder=reshape_arabic(" "), font=FONT_BODY, height=42, corner_radius=6,
-                                  fg_color=COLORS["bg_input"], text_color=COLORS["text_white"], border_color=COLORS["border"])
+                                   fg_color=COLORS["bg_input"], text_color=COLORS["text_white"], border_color=COLORS["border"])
         self.name_entry.grid(row=1, column=0, sticky="ew", pady=(0, 10))
         self.name_entry._frame.bind("<KeyRelease>", lambda e: self._auto_update_barcode_name(), add=True)
+        self.name_entry.bind("<KeyRelease>", lambda e: self._schedule_auto_save(), add=True)
+        # دعم الحفظ التلقائي حتى لو التركيز داخل الإطار الداخلي
+        try:
+            self.name_entry._entry.bind("<KeyRelease>", lambda e: self._schedule_auto_save(), add=True)
+        except Exception:
+            pass
 
         # الباركود + زر توليد
         self._create_field(body, "الباركود (يُنشأ تلقائياً)", 2)
@@ -292,6 +299,7 @@ class ProtWindow(ctk.CTk):
                                       fg_color=COLORS["bg_input"], text_color=COLORS["text_white"], border_color=COLORS["border"], justify="center",
                                       placeholder_text="auto")
         self.barcode_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.barcode_entry.bind("<KeyRelease>", lambda e: self._schedule_auto_save(), add=True)
         ctk.CTkButton(barcode_row, text="↻", font=("DejaVu Sans", 14, "bold"), width=42, height=42, corner_radius=6,
                   fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], text_color="white",
                   command=self._generate_new_barcode).grid(row=0, column=1)
@@ -300,7 +308,8 @@ class ProtWindow(ctk.CTk):
         self._create_field(body, "الفئة", 4)
         disp, self.cat_map = make_optionmenu_values(CATEGORIES)
         self.cat_menu = AnimatedOptionMenu(body, values=disp, font=FONT_BODY, dropdown_font=FONT_BODY, height=42, corner_radius=6,
-                                       fg_color=COLORS["bg_input"], button_color=COLORS["accent"], button_hover_color=COLORS["accent_hover"], text_color=COLORS["text_white"])
+                                        fg_color=COLORS["bg_input"], button_color=COLORS["accent"], button_hover_color=COLORS["accent_hover"], text_color=COLORS["text_white"],
+                                        command=lambda v: self._schedule_auto_save())
         self.cat_menu.set(disp[0])
         self.cat_menu.grid(row=5, column=0, sticky="ew", pady=(0, 10))
 
@@ -316,19 +325,30 @@ class ProtWindow(ctk.CTk):
                                      fg_color=COLORS["bg_input"], text_color=COLORS["text_white"], border_color=COLORS["border"], justify="center",
                                      placeholder_text="0.00")
         self.price_entry.grid(row=1, column=0, sticky="ew", padx=(0, 4))
-        self.price_entry.bind("<KeyRelease>", self._filter_price)
+        self.price_entry.bind("<KeyRelease>", self._filter_price, add=True)
+        self.price_entry.bind("<KeyRelease>", lambda e: self._schedule_auto_save(), add=True)
 
         self.stock_entry = ctk.CTkEntry(price_stock, font=FONT_BODY, height=42, corner_radius=6,
                                      fg_color=COLORS["bg_input"], text_color=COLORS["text_white"], border_color=COLORS["border"], justify="center",
                                      placeholder_text="0")
         self.stock_entry.grid(row=1, column=1, sticky="ew", padx=(4, 0))
-        self.stock_entry.bind("<KeyRelease>", self._filter_int)
+        self.stock_entry.bind("<KeyRelease>", self._filter_int, add=True)
+        self.stock_entry.bind("<KeyRelease>", lambda e: self._schedule_auto_save(), add=True)
 
         # الوصف
         self._create_field(body, "الوصف (اختياري)", 7)
         self.desc_entry = ArabicEntry(body, placeholder=reshape_arabic(" "), font=FONT_BODY, height=42, corner_radius=6,
-                                  fg_color=COLORS["bg_input"], text_color=COLORS["text_white"], border_color=COLORS["border"])
+                                   fg_color=COLORS["bg_input"], text_color=COLORS["text_white"], border_color=COLORS["border"])
         self.desc_entry.grid(row=8, column=0, sticky="ew", pady=(0, 10))
+        self.desc_entry.bind("<KeyRelease>", lambda e: self._schedule_auto_save(), add=True)
+        try:
+            self.desc_entry._entry.bind("<KeyRelease>", lambda e: self._schedule_auto_save(), add=True)
+        except Exception:
+            pass
+        try:
+            self.desc_entry._frame.bind("<KeyRelease>", lambda e: self._schedule_auto_save(), add=True)
+        except Exception:
+            pass
 
         # معاينة باركود
         self.barcode_preview_frame = ctk.CTkFrame(body, fg_color=COLORS["bg_input"], corner_radius=8, border_width=1, border_color=COLORS["border"])
@@ -591,6 +611,17 @@ class ProtWindow(ctk.CTk):
         self.edit_btns.pack(fill="x", padx=20, pady=(0, 8))
         self._update_barcode_preview()
         self._toast(reshape_arabic("وضع التعديل"), COLORS["info"])
+
+    def _schedule_auto_save(self, *_):
+        # حفظ تلقائي لأي تعديل حتى لو السعر 0
+        if not getattr(self, '_editing_id', None):
+            return
+        if getattr(self, '_auto_save_job', None):
+            try:
+                self.after_cancel(self._auto_save_job)
+            except Exception:
+                pass
+        self._auto_save_job = self.after(900, self._update_product)
 
     def _update_product(self):
         if not self._editing_id:
@@ -893,13 +924,15 @@ class ProtWindow(ctk.CTk):
                 w.destroy()
         except Exception:
             pass
-        scale = self._get_cart_scale()
-        fh = self._scaled_font(FONT_HEADER, scale)
-        fb = self._scaled_font(FONT_BODY, scale)
-        fbb = self._scaled_font(FONT_BODY_BOLD, scale)
-        fs = self._scaled_font(FONT_SMALL, scale)
-        hdr_h = self._scaled_height(48, scale)
-        wrap = self._scaled_width(320, scale)
+        # تكبير كتابة تفاصيل المنتج 25% + إزالة جزء العدد المطلوب
+        base_scale = self._get_cart_scale()
+        det_scale = base_scale * 1.25
+        fh = self._scaled_font(FONT_HEADER, det_scale)
+        fb = self._scaled_font(FONT_BODY, det_scale)
+        fbb = self._scaled_font(FONT_BODY_BOLD, det_scale)
+        fs = self._scaled_font(FONT_SMALL, det_scale)
+        hdr_h = self._scaled_height(48, det_scale)
+        wrap = self._scaled_width(320, det_scale)
         frame = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=10)
         frame.pack(fill="both", expand=True)
 
@@ -909,36 +942,20 @@ class ProtWindow(ctk.CTk):
         ctk.CTkLabel(header, text=reshape_arabic("تفاصيل المنتج"), font=fh, text_color="white").pack(expand=True)
 
         self.details_scroll = ctk.CTkScrollableFrame(frame, fg_color="transparent")
-        self.details_scroll.pack(fill="both", expand=True, padx=self._scaled_width(12), pady=self._scaled_width(12))
+        self.details_scroll.pack(fill="both", expand=True, padx=self._scaled_width(12, det_scale), pady=self._scaled_width(12, det_scale))
 
-        self.det_name = ctk.CTkLabel(self.details_scroll, text=reshape_arabic("—"), font=fbb, text_color=COLORS["text_white"], wraplength=wrap, anchor="e", justify="right")
-        self.det_name.pack(fill="x", pady=self._scaled_height(4))
+        self.det_name = ctk.CTkLabel(self.details_scroll, text=reshape_arabic("—"), font=fbb, text_color=COLORS["text_white"], anchor="e", justify="right")
+        self.det_name.pack(fill="x", pady=self._scaled_height(4, det_scale))
         self.det_barcode = ctk.CTkLabel(self.details_scroll, text="—", font=fb, text_color=COLORS["text_light"])
-        self.det_barcode.pack(fill="x", pady=self._scaled_height(2))
+        self.det_barcode.pack(fill="x", pady=self._scaled_height(2, det_scale))
         self.det_serial = ctk.CTkLabel(self.details_scroll, text="—", font=fb, text_color=COLORS["accent"])
-        self.det_serial.pack(fill="x", pady=self._scaled_height(2))
+        self.det_serial.pack(fill="x", pady=self._scaled_height(2, det_scale))
         self.det_price = ctk.CTkLabel(self.details_scroll, text="—", font=fbb, text_color=COLORS["success"])
-        self.det_price.pack(fill="x", pady=self._scaled_height(2))
+        self.det_price.pack(fill="x", pady=self._scaled_height(2, det_scale))
         self.det_stock = ctk.CTkLabel(self.details_scroll, text=reshape_arabic("المتاح: —"), font=fb, text_color=COLORS["text_light"])
-        self.det_stock.pack(fill="x", pady=self._scaled_height(6))
+        self.det_stock.pack(fill="x", pady=self._scaled_height(6, det_scale))
 
-        qty_row = ctk.CTkFrame(self.details_scroll, fg_color="transparent")
-        qty_row.pack(fill="x", pady=self._scaled_height(10))
-        ctk.CTkLabel(qty_row, text=reshape_arabic("العدد المطلوب"), font=fs, text_color=COLORS["text_light"]).pack(anchor="e", pady=(0, self._scaled_height(4)))
-        qty_ctrl = ctk.CTkFrame(qty_row, fg_color="transparent")
-        qty_ctrl.pack(fill="x")
-        ctk.CTkButton(qty_ctrl, text="−", width=self._scaled_width(40), height=self._scaled_height(36), fg_color=COLORS["bg_input"], hover_color=COLORS["bg_hover"], text_color="white",
-                  command=lambda: self._change_selected_qty(-1)).pack(side="right", padx=self._scaled_width(2))
-        self.det_qty_entry = ctk.CTkEntry(qty_ctrl, width=self._scaled_width(80), height=self._scaled_height(36), justify="center", font=fb, fg_color=COLORS["bg_input"], text_color="white", border_color=COLORS["border"])
-        self.det_qty_entry.insert(0, "1")
-        self.det_qty_entry.pack(side="right", padx=self._scaled_width(4))
-        self.det_qty_entry.bind("<KeyRelease>", lambda e: self._on_det_qty_typed())
-        ctk.CTkButton(qty_ctrl, text="+", width=self._scaled_width(40), height=self._scaled_height(36), fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], text_color="white",
-                  command=lambda: self._change_selected_qty(1)).pack(side="right", padx=self._scaled_width(2))
-        ctk.CTkButton(qty_ctrl, text=reshape_arabic("تحديث"), font=fs, width=self._scaled_width(60), height=self._scaled_height(36), fg_color=COLORS["info"], hover_color=COLORS["info_hover"], text_color="white",
-                  command=self._apply_det_qty).pack(side="right", padx=(self._scaled_width(6), 0))
-
-        ctk.CTkLabel(self.details_scroll, text=reshape_arabic("مثال: القطعة 50 جنيه، الكمية 2 → الإجمالي 100"), font=fs, text_color=COLORS["text_light"], wraplength=wrap, justify="right").pack(fill="x", pady=(self._scaled_height(12), 0))
+        # تمت إزالة جزء العدد المطلوب والمثال حسب الطلب
         self._refresh_pos_details(None)
         self._pos_details_frame = frame
 
@@ -1042,9 +1059,9 @@ class ProtWindow(ctk.CTk):
             ctk.CTkButton(qty_frame, text="+", width=self._scaled_width(28), height=self._scaled_height(22), fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], text_color="white",
                           command=lambda i=idx: self._change_cart_qty(i, 1)).pack(side="right", padx=self._scaled_width(1))
             ctk.CTkLabel(row, text=f"{price:.2f}", font=fb, text_color=COLORS["text_light"], width=self._scaled_width(80)).pack(side="right", padx=self._scaled_width(4), pady=self._scaled_height(6))
-            # ضبط طول الاسم حسب الحجم لتفادي التداخل
-            name_len = max(8, int(18 / max(1, scale ** 0.5))) if scale > 2 else 18
-            ctk.CTkLabel(row, text=reshape_arabic(p["name"][:name_len]), font=fb, text_color="white", width=self._scaled_width(140)).pack(side="right", padx=self._scaled_width(4), pady=self._scaled_height(6))
+            # عرض الاسم كاملاً في نفس السطر (بدون التفاف)
+            full_name = p["name"] or ""
+            ctk.CTkLabel(row, text=reshape_arabic(full_name), font=fb, text_color="white", width=self._scaled_width(220), anchor="e", justify="right").pack(side="right", padx=self._scaled_width(4), pady=self._scaled_height(6))
             for ch in row.winfo_children():
                 ch.bind("<Button-1>", lambda e, prod=p: self._refresh_pos_details(prod))
             row.bind("<Button-1>", lambda e, prod=p: self._refresh_pos_details(prod))
@@ -1088,9 +1105,11 @@ class ProtWindow(ctk.CTk):
             if it["product"]["id"] == prod["id"]:
                 qty_in_cart = it["qty"]
                 break
+        # det_qty_entry أزيل حسب الطلب — تجاهل بأمان
         try:
-            self.det_qty_entry.delete(0, "end")
-            self.det_qty_entry.insert(0, str(qty_in_cart))
+            if hasattr(self, 'det_qty_entry'):
+                self.det_qty_entry.delete(0, "end")
+                self.det_qty_entry.insert(0, str(qty_in_cart))
         except Exception:
             pass
 
@@ -1136,7 +1155,7 @@ class ProtWindow(ctk.CTk):
         for idx, it in enumerate(self._cart):
             if it["product"]["id"] == self._selected_product["id"]:
                 self._change_cart_qty(idx, delta)
-            return
+                return
         if delta > 0:
             self._add_product_to_cart(self._selected_product)
 
@@ -1145,6 +1164,8 @@ class ProtWindow(ctk.CTk):
 
     def _apply_det_qty(self):
         if not self._selected_product:
+            return
+        if not hasattr(self, 'det_qty_entry'):
             return
         try:
             qty = int(self.det_qty_entry.get().strip() or "1")
@@ -1163,11 +1184,11 @@ class ProtWindow(ctk.CTk):
         for idx, it in enumerate(self._cart):
             if it["product"]["id"] == self._selected_product["id"]:
                 it["qty"] = qty
-            self._refresh_pos_cart()
-            return
+                self._refresh_pos_cart()
+                return
         if qty <= avail:
             self._cart.append({"product": self._selected_product, "qty": qty})
-        self._refresh_pos_cart()
+            self._refresh_pos_cart()
 
     def _clear_pos_cart(self):
         if not self._cart:
