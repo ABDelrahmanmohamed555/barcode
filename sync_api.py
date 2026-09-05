@@ -11,10 +11,21 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PHONE_JSON = os.path.join(os.path.dirname(BASE_DIR), "phone app", "products.json")
 # ضمان وجود مسارات المشروع حتى لو شُغّل من venv أو cron
 for p in [os.path.dirname(BASE_DIR), BASE_DIR, "/home/kali/Desktop", "/home/kali/Desktop/cashier"]:
     if p not in sys.path:
         sys.path.insert(0, p)
+
+def _export_local():
+    # مزامنة محلية للبرمجة: يكتب DB إلى phone app/products.json (يعمل حتى بدون شبكة)
+    try:
+        rows = get_all_products()
+        os.makedirs(os.path.dirname(PHONE_JSON), exist_ok=True)
+        with open(PHONE_JSON, "w", encoding="utf-8") as f:
+            json.dump(rows, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 try:
     from prot.db.database import get_all_products, get_product_by_id, add_product, update_product
@@ -122,6 +133,7 @@ class Handler(BaseHTTPRequestHandler):
             desc = (data.get("description") or "").strip()
             pid, code = add_product(name, category, price, stock, desc, barcode)
             prod = get_product_by_id(pid)
+            _export_local()
             body = json.dumps(prod, ensure_ascii=False).encode()
             self.send_response(201)
             _cors_headers(self)
@@ -168,6 +180,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._err("فشل التحديث (باركود مكرر؟)", 400)
                 return
             prod = get_product_by_id(pid)
+            _export_local()
             body = json.dumps(prod, ensure_ascii=False).encode()
             self.send_response(200)
             _cors_headers(self)

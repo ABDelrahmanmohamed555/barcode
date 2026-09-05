@@ -3,7 +3,7 @@ import os
 import random
 from datetime import datetime
 
-from prot.config import DB_PATH, ADMIN_USERNAME, ADMIN_PASSWORD, EMPLOYEE_USERNAME, EMPLOYEE_PASSWORD
+from prot.config import BASE_DIR, DB_PATH, ADMIN_USERNAME, ADMIN_PASSWORD, EMPLOYEE_USERNAME, EMPLOYEE_PASSWORD
 
 
 def get_connection():
@@ -268,6 +268,28 @@ def get_unique_barcode():
     return datetime.now().strftime("%Y%m%d%H%M%S") + str(random.randint(10, 99))
 
 
+def _export_phone_app():
+    # مزامنة محلية: تصدير فوري إلى phone app/products.json للبرمجة بدون شبكة
+    try:
+        import json as _json, os as _os
+        rows = get_all_products()
+        candidates = [
+            _os.path.join(_os.path.dirname(BASE_DIR), "phone app", "products.json"),
+            "/home/kali/Desktop/phone app/products.json",
+            _os.path.join(BASE_DIR, "..", "phone app", "products.json"),
+        ]
+        for cand in candidates:
+            try:
+                cand = _os.path.abspath(cand)
+                _os.makedirs(_os.path.dirname(cand), exist_ok=True)
+                with open(cand, "w", encoding="utf-8") as f:
+                    _json.dump(rows, f, ensure_ascii=False, indent=2)
+                break
+            except Exception:
+                continue
+    except Exception:
+        pass
+
 def add_product(name, category="عام", price=0, stock=0, description="", barcode=None, image_path="", barcode_path=""):
     if not barcode:
         barcode = get_unique_barcode()
@@ -282,6 +304,8 @@ def add_product(name, category="عام", price=0, stock=0, description="", barco
         conn.commit()
         pid = cur.lastrowid
         conn.close()
+        try: _export_phone_app()
+        except: pass
         return pid, barcode
     except sqlite3.IntegrityError as e:
         conn.close()
@@ -364,11 +388,12 @@ def update_product(pid, name=None, category=None, price=None, stock=None, descri
         cur.execute(f"UPDATE products SET {', '.join(fields)} WHERE id=?", params)
         conn.commit()
         conn.close()
+        try: _export_phone_app()
+        except: pass
         return True
     except sqlite3.IntegrityError:
         conn.close()
         return False
-
 
 def delete_product(pid):
     conn = get_connection()
@@ -387,6 +412,9 @@ def delete_product(pid):
         ok = False
     finally:
         conn.close()
+    if ok:
+        try: _export_phone_app()
+        except: pass
     return ok
 
 

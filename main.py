@@ -56,6 +56,8 @@ class ProtWindow(ctk.CTk):
         self._prot_backup_timer = None
         self._editing_id = None
         self._auto_save_job = None
+        self._auto_add_job = None
+        self._last_auto_barcode = None
         self._barcode_preview = None
         # POS للمستخدم العادي (employee)
         self._cart = []
@@ -613,15 +615,71 @@ class ProtWindow(ctk.CTk):
         self._toast(reshape_arabic("وضع التعديل"), COLORS["info"])
 
     def _schedule_auto_save(self, *_):
-        # حفظ تلقائي لأي تعديل حتى لو السعر 0
-        if not getattr(self, '_editing_id', None):
-            return
-        if getattr(self, '_auto_save_job', None):
+        # حفظ تلقائي لأي إضافة/تعديل حتى لو السعر 0
+        if getattr(self, '_editing_id', None):
+            if getattr(self, '_auto_save_job', None):
+                try:
+                    self.after_cancel(self._auto_save_job)
+                except Exception:
+                    pass
+            self._auto_save_job = self.after(900, self._update_product)
+        else:
+            # وضع الإضافة: يحفظ تلقائياً بعد اكتمال البيانات
             try:
-                self.after_cancel(self._auto_save_job)
+                name = self.name_entry.get().strip() if hasattr(self, 'name_entry') else ""
+                barcode = self.barcode_entry.get().strip() if hasattr(self, 'barcode_entry') else ""
             except Exception:
-                pass
-        self._auto_save_job = self.after(900, self._update_product)
+                return
+            if not name or len(name) < 2 or not barcode:
+                return
+            if getattr(self, '_auto_add_job', None):
+                try:
+                    self.after_cancel(self._auto_add_job)
+                except Exception:
+                    pass
+            self._auto_add_job = self.after(1200, self._auto_add_product)
+
+    def _auto_add_product(self):
+        # حفظ تلقائي للمنتج الجديد حتى لو السعر 0
+        if getattr(self, '_editing_id', None):
+            return
+        try:
+            name = self.name_entry.get().strip()
+            barcode = self.barcode_entry.get().strip()
+            cat_disp = self.cat_menu.get()
+            category = self.cat_map.get(cat_disp, cat_disp)
+            price = self.price_entry.get().strip() or "0"
+            stock = self.stock_entry.get().strip() or "0"
+            desc = self.desc_entry.get().strip()
+            if not name or not barcode:
+                return
+            if getattr(self, '_last_auto_barcode', None) == barcode:
+                return
+            price_f = float(price)
+            stock_i = int(stock)
+            try:
+                path = generate_barcode_image(barcode, name)
+            except Exception:
+                path = ""
+            pid, code = add_product(name, category, price_f, stock_i, desc, barcode, barcode_path=path)
+            self._editing_id = pid
+            self._last_auto_barcode = barcode
+            self.form_title.configure(text=reshape_arabic(f"تعديل: {name[:20]}"))
+            try: self.save_btn.pack_forget()
+            except: pass
+            try: self.edit_btns.pack(fill="x", padx=20, pady=(0, 8))
+            except: pass
+            self._toast(reshape_arabic(f"تم الحفظ تلقائياً ✓ {name}"), COLORS["success"])
+            self._refresh_table()
+        except ValueError as e:
+            try:
+                from prot.db.database import get_product_by_barcode
+                prod = get_product_by_barcode(barcode)
+                if prod:
+                    self._editing_id = prod["id"]
+            except: pass
+        except Exception:
+            pass
 
     def _update_product(self):
         if not self._editing_id:
@@ -674,6 +732,12 @@ class ProtWindow(ctk.CTk):
 
     def _cancel_edit(self):
         self._editing_id = None
+        self._last_auto_barcode = None
+        for attr in ('_auto_save_job', '_auto_add_job'):
+            if getattr(self, attr, None):
+                try: self.after_cancel(getattr(self, attr))
+                except: pass
+                setattr(self, attr, None)
         self.edit_btns.pack_forget()
         self.save_btn.pack(fill="x", padx=20, pady=(0, 8))
         self.form_title.configure(text=reshape_arabic("إضافة منتج"))
