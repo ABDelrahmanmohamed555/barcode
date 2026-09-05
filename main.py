@@ -54,6 +54,7 @@ class ProtWindow(ctk.CTk):
 
         self._clock_timer = None
         self._prot_backup_timer = None
+        self._prot_updater_timer = None
         self._editing_id = None
         self._auto_save_job = None
         self._auto_add_job = None
@@ -76,6 +77,7 @@ class ProtWindow(ctk.CTk):
         else:
             self._refresh_table()
         self.after(2500, self._start_prot_backup_scheduler)
+        self.after(3000, self._start_prot_updater_scheduler)
         self.bind("<Escape>", lambda e: self._logout())
         self.protocol("WM_DELETE_WINDOW", self._logout)
 
@@ -140,6 +142,11 @@ class ProtWindow(ctk.CTk):
         if getattr(self, "_prot_backup_timer", None):
             try:
                 self.after_cancel(self._prot_backup_timer)
+            except Exception:
+                pass
+        if getattr(self, "_prot_updater_timer", None):
+            try:
+                self.after_cancel(self._prot_updater_timer)
             except Exception:
                 pass
         super().destroy()
@@ -1572,6 +1579,58 @@ class ProtWindow(ctk.CTk):
             btn_backup_row.pack(fill="x", padx=14, pady=(0, 12))
             ctk.CTkButton(btn_backup_row, text=reshape_arabic("نسخ احتياطي الآن (prot)"), font=FONT_BODY_BOLD, height=42, fg_color=COLORS["success"], hover_color=COLORS["success_hover"], text_color=COLORS["text_white"], command=self._do_prot_backup_now).pack(fill="x")
 
+            # --- توكن GitHub لمرة واحدة (prot) ---
+            try:
+                from prot.git_backup import load_github_token
+                _tok = load_github_token()
+                _tok_status = "محفوظ ✓" if _tok else "غير محفوظ"
+                _tok_color = COLORS["success"] if _tok else COLORS["warning"]
+            except Exception:
+                _tok_status = "غير محفوظ"
+                _tok_color = COLORS["text_light"]
+            ctk.CTkLabel(backup_frame, text=reshape_arabic("توكن GitHub (ghp_...) لمرة واحدة"), font=FONT_SMALL, text_color=COLORS["text_light"], anchor="e").pack(fill="x", padx=14, pady=(8, 4))
+            token_row = ctk.CTkFrame(backup_frame, fg_color="transparent")
+            token_row.pack(fill="x", padx=14, pady=(0, 4))
+            self.prot_backup_token_entry = ctk.CTkEntry(token_row, font=FONT_SMALL, height=42, corner_radius=8, fg_color=COLORS["bg_input"], text_color=COLORS["text_white"], border_color=COLORS["border"], justify="left", placeholder_text="ghp_... أو github_pat_...", show="*")
+            self.prot_backup_token_entry.pack(side="right", fill="x", expand=True, padx=(0, 8))
+            ctk.CTkButton(token_row, text=reshape_arabic("حفظ"), font=FONT_SMALL, width=70, height=42, fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], text_color=COLORS["text_white"], command=self._save_prot_github_token).pack(side="right", padx=(0, 4))
+            ctk.CTkButton(token_row, text=reshape_arabic("مسح"), font=FONT_SMALL, width=60, height=42, fg_color="transparent", border_width=1, border_color=COLORS["border"], hover_color=COLORS["bg_hover"], text_color=COLORS["text_light"], command=self._clear_prot_github_token).pack(side="right")
+            self.prot_backup_token_status = ctk.CTkLabel(backup_frame, text=reshape_arabic(f"الحالة: {_tok_status}"), font=FONT_SMALL, text_color=_tok_color, anchor="e")
+            self.prot_backup_token_status.pack(fill="x", padx=14, pady=(0, 8))
+            ctk.CTkLabel(backup_frame, text=reshape_arabic("أدخل التوكن مرة واحدة من GitHub → Settings → Developer settings → Personal access tokens → Generate new token (classic) → اختر repo"), font=FONT_SMALL, text_color=COLORS["text_light"], anchor="e", wraplength=440, justify="right").pack(fill="x", padx=14, pady=(0, 8))
+
+            # --- كارت التحديث التلقائي (prot) ---
+            updater_frame = ctk.CTkFrame(container, fg_color=COLORS["bg_card"], corner_radius=10)
+            updater_frame.pack(fill="x", pady=(0, 12))
+            ctk.CTkLabel(updater_frame, text=reshape_arabic("التحديث التلقائي (prot)"), font=FONT_HEADER, text_color=COLORS["accent"]).pack(anchor="e", padx=14, pady=(12, 4))
+            ctk.CTkLabel(updater_frame, text=reshape_arabic("يفحص GitHub يومياً عند وقت محدد، ولو وجد commit رسالته update1,2... يعمل نسخ احتياطي للـ DB ثم ينزل الملفات المتغيرة فقط ويتأكد أن المحلي == GitHub"), font=FONT_SMALL, text_color=COLORS["text_light"], anchor="e", wraplength=440, justify="right").pack(fill="x", padx=14, pady=(0, 8))
+            try:
+                from prot.updater import load_updater_config
+                _up_cfg = load_updater_config()
+            except Exception:
+                _up_cfg = {"enabled": False, "time": "03:00", "last_check": "", "last_update": ""}
+            self.prot_updater_enabled_var = ctk.BooleanVar(value=_up_cfg.get("enabled", False))
+            self.prot_updater_switch = ctk.CTkSwitch(updater_frame, text=reshape_arabic("تفعيل التحديث التلقائي"), font=FONT_SMALL, variable=self.prot_updater_enabled_var, command=self._on_prot_updater_toggle, progress_color=COLORS["accent"], button_color=COLORS["text_white"], fg_color=COLORS["bg_input"], text_color=COLORS["text_light"])
+            self.prot_updater_switch.pack(anchor="e", padx=14, pady=(0, 8))
+            ctk.CTkLabel(updater_frame, text=reshape_arabic("وقت الفحص (HH:MM)"), font=FONT_SMALL, text_color=COLORS["text_light"], anchor="e").pack(fill="x", padx=14, pady=(0, 4))
+            updater_time_row = ctk.CTkFrame(updater_frame, fg_color="transparent")
+            updater_time_row.pack(fill="x", padx=14, pady=(0, 8))
+            self.prot_updater_time_entry = ctk.CTkEntry(updater_time_row, font=FONT_BODY, height=42, corner_radius=8, fg_color=COLORS["bg_input"], text_color=COLORS["text_white"], border_color=COLORS["border"], justify="center", placeholder_text="03:00")
+            self.prot_updater_time_entry.insert(0, _up_cfg.get("time", "03:00"))
+            self.prot_updater_time_entry.pack(side="right", fill="x", expand=True, padx=(0, 8))
+            self.prot_updater_time_entry.bind("<KeyRelease>", self._on_prot_updater_time_typed)
+            ctk.CTkButton(updater_time_row, text=reshape_arabic("حفظ"), font=FONT_SMALL, width=80, height=42, fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], text_color=COLORS["text_white"], command=self._save_prot_updater_config).pack(side="right")
+            self.prot_updater_status = ctk.CTkLabel(updater_frame, text="", font=FONT_SMALL, text_color=COLORS["text_light"], anchor="e", wraplength=440, justify="right")
+            self.prot_updater_status.pack(fill="x", padx=14, pady=(6, 8))
+            if _up_cfg.get("enabled"):
+                self.prot_updater_status.configure(text=reshape_arabic(f"مفعل — يفحص يومياً عند {_up_cfg.get('time','03:00')}"), text_color=COLORS["success"])
+            else:
+                self.prot_updater_status.configure(text=reshape_arabic("متوقف — فعّل واختر الوقت ثم احفظ"), text_color=COLORS["text_light"])
+            updater_btn_row = ctk.CTkFrame(updater_frame, fg_color="transparent")
+            updater_btn_row.pack(fill="x", padx=14, pady=(0, 12))
+            ctk.CTkButton(updater_btn_row, text=reshape_arabic("فحص التحديث الآن"), font=FONT_BODY_BOLD, height=42, fg_color=COLORS["info"], hover_color=COLORS["info_hover"], text_color=COLORS["text_white"], command=self._check_prot_update_now).pack(fill="x", pady=(0, 6))
+            ctk.CTkButton(updater_btn_row, text=reshape_arabic("تحديث الآن (حتى لو ليس وقت الفحص)"), font=FONT_SMALL, height=36, fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], text_color=COLORS["text_white"], command=self._force_prot_update_now).pack(fill="x")
+
         # كارت حجم خط السلة — نافذة إعدادات في صلاحيات المستخدم (الإجمالي والدفع/الإلغاء)
         font_scale_frame = ctk.CTkFrame(container, fg_color=COLORS["bg_card"], corner_radius=10)
         font_scale_frame.pack(fill="x", pady=(0, 12))
@@ -1806,6 +1865,110 @@ class ProtWindow(ctk.CTk):
                 self.after(0, lambda err=err: self.prot_backup_status.configure(text=reshape_arabic(f"خطأ: {err}"), text_color=COLORS["danger"]))
         threading.Thread(target=worker, daemon=True).start()
 
+    def _save_prot_github_token(self):
+        tok = self.prot_backup_token_entry.get().strip()
+        if not tok:
+            self.prot_backup_token_status.configure(text=reshape_arabic("أدخل التوكن أولاً"), text_color=COLORS["warning"])
+            return
+        try:
+            from prot.git_backup import save_github_token
+            ok, msg = save_github_token(tok)
+            if ok:
+                self.prot_backup_token_entry.delete(0, "end")
+                self.prot_backup_token_status.configure(text=reshape_arabic("محفوظ ✓ لن تحتاج إدخاله مرة أخرى"), text_color=COLORS["success"])
+                self.prot_backup_status.configure(text=reshape_arabic("التوكن محفوظ — جرّب نسخ احتياطي الآن"), text_color=COLORS["success"])
+            else:
+                self.prot_backup_token_status.configure(text=reshape_arabic(msg[:60]), text_color=COLORS["danger"])
+        except Exception as e:
+            self.prot_backup_token_status.configure(text=reshape_arabic(f"خطأ: {e}"), text_color=COLORS["danger"])
+
+    def _clear_prot_github_token(self):
+        try:
+            from prot.git_backup import clear_github_token
+            removed = clear_github_token()
+            self.prot_backup_token_status.configure(text=reshape_arabic("تم مسح التوكن"), text_color=COLORS["text_light"])
+            self.prot_backup_status.configure(text=reshape_arabic("التوكن محذوف — أدخل واحداً جديداً"), text_color=COLORS["warning"])
+        except Exception as e:
+            self.prot_backup_token_status.configure(text=reshape_arabic(f"خطأ: {e}"), text_color=COLORS["danger"])
+
+    def _on_prot_updater_toggle(self):
+        enabled = self.prot_updater_enabled_var.get()
+        if enabled:
+            self.prot_updater_status.configure(text=reshape_arabic("اختر الوقت ثم اضغط حفظ"), text_color=COLORS["text_light"])
+        else:
+            self.prot_updater_status.configure(text=reshape_arabic("متوقف — سيتوقف التحديث"), text_color=COLORS["text_light"])
+            try:
+                cur_time = self.prot_updater_time_entry.get().strip() or "03:00"
+                from prot.updater import save_updater_config
+                save_updater_config(enabled=False, time_str=cur_time)
+            except Exception:
+                pass
+            try:
+                from prot.updater import remove_cron
+                remove_cron()
+            except Exception:
+                pass
+
+    def _on_prot_updater_time_typed(self, *_):
+        txt = self.prot_updater_time_entry.get().strip()
+        cleaned = "".join(c for c in txt if c.isdigit() or c == ":")[:5]
+        if cleaned.count(":") > 1:
+            parts = cleaned.split(":")
+            cleaned = parts[0] + ":" + "".join(parts[1:])
+        if cleaned != txt:
+            self.prot_updater_time_entry.delete(0, "end")
+            self.prot_updater_time_entry.insert(0, cleaned)
+
+    def _save_prot_updater_config(self):
+        time_str = self.prot_updater_time_entry.get().strip() or "03:00"
+        try:
+            hh, mm = time_str.split(":")
+            hh, mm = int(hh), int(mm)
+            if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                raise ValueError
+            time_str = f"{hh:02d}:{mm:02d}"
+            self.prot_updater_time_entry.delete(0, "end")
+            self.prot_updater_time_entry.insert(0, time_str)
+        except Exception:
+            self.prot_updater_status.configure(text=reshape_arabic("صيغة الوقت غير صحيحة (HH:MM)"), text_color=COLORS["danger"])
+            return
+        enabled = self.prot_updater_enabled_var.get()
+        try:
+            from prot.updater import save_updater_config, install_cron, remove_cron
+            save_updater_config(enabled=enabled, time_str=time_str)
+            if enabled:
+                install_cron(time_str)
+                self.prot_updater_status.configure(text=reshape_arabic(f"مفعل — يفحص يومياً عند {time_str}"), text_color=COLORS["success"])
+            else:
+                remove_cron()
+                self.prot_updater_status.configure(text=reshape_arabic("متوقف"), text_color=COLORS["text_light"])
+        except Exception as e:
+            self.prot_updater_status.configure(text=reshape_arabic(f"خطأ: {e}"), text_color=COLORS["danger"])
+
+    def _check_prot_update_now(self):
+        self.prot_updater_status.configure(text=reshape_arabic("جاري فحص التحديث..."), text_color=COLORS["text_light"])
+        def worker():
+            try:
+                from prot.updater import check_for_update
+                has_update, msg, commits = check_for_update()
+                self.after(0, lambda: self.prot_updater_status.configure(text=reshape_arabic(msg[:80]), text_color=COLORS["success"] if has_update else COLORS["text_light"]))
+            except Exception as e:
+                self.after(0, lambda: self.prot_updater_status.configure(text=reshape_arabic(f"خطأ: {e}"), text_color=COLORS["danger"]))
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _force_prot_update_now(self):
+        self.prot_updater_status.configure(text=reshape_arabic("جاري التحديث..."), text_color=COLORS["text_light"])
+        def worker():
+            try:
+                from prot.updater import do_update
+                ok, msg = do_update()
+                self.after(0, lambda: self.prot_updater_status.configure(text=reshape_arabic(msg[:80]), text_color=COLORS["success"] if ok else COLORS["danger"]))
+            except Exception as e:
+                self.after(0, lambda: self.prot_updater_status.configure(text=reshape_arabic(f"خطأ: {e}"), text_color=COLORS["danger"]))
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
     def _start_prot_backup_scheduler(self):
         try:
             self._check_prot_backup_schedule()
@@ -1842,6 +2005,45 @@ class ProtWindow(ctk.CTk):
             threading.Thread(target=worker, daemon=True).start()
         except Exception as e:
             print("prot backup check err", e)
+
+    def _start_prot_updater_scheduler(self):
+        try:
+            self._check_prot_updater_schedule()
+        except Exception as e:
+            print("prot updater scheduler err", e)
+        self._prot_updater_timer = self.after(60000, self._start_prot_updater_scheduler)
+
+    def _check_prot_updater_schedule(self):
+        try:
+            from prot.updater import load_updater_config
+            cfg = load_updater_config()
+            if not cfg.get("enabled"):
+                return
+            now = datetime.now()
+            cur_time = now.strftime("%H:%M")
+            target = cfg.get("time", "03:00")
+            if cur_time != target:
+                return
+            today = now.date()
+            today_str = now.strftime("%Y-%m-%d")
+            last_check = cfg.get("last_check", "")
+            from prot.updater import should_run_today as _should
+            if not _should("daily", last_check, today):
+                return
+            print(f"[prot updater scheduler] حان وقت الفحص {target} — فحص التحديث")
+            from prot.updater import save_updater_config, do_update
+            save_updater_config(enabled=True, time_str=target, last_check=today_str, last_update=cfg.get("last_update",""))
+            def worker():
+                ok, msg = do_update()
+                print(f"[prot updater] {msg}")
+                try:
+                    self.after(0, lambda: self.prot_updater_status.configure(text=msg[:80], text_color=COLORS["success"] if ok else COLORS["danger"]))
+                except Exception:
+                    pass
+            import threading
+            threading.Thread(target=worker, daemon=True).start()
+        except Exception as e:
+            print("prot updater check err", e)
 
     def _show_toast(self, msg, color):
         # alias للتوافق مع كود main.py الرئيسي

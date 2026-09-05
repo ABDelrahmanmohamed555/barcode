@@ -1,4 +1,6 @@
 import os
+import platform
+_IS_WINDOWS = platform.system().lower().startswith("win")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -28,6 +30,12 @@ if not os.path.exists(FONTS_DIR) and os.path.exists(_alt):
 # fallback أخير: جرب Desktop/cashier لو لسه مش موجود
 if not os.path.exists(FONTS_DIR):
     for _cand in ["/home/kali/Desktop/cashier/assets/fonts", "/home/kali/Desktop/cashier_2/assets/fonts"]:
+        if os.path.exists(_cand):
+            FONTS_DIR = _cand
+            break
+if _IS_WINDOWS and not os.path.exists(FONTS_DIR):
+    _win_candidates = [r"C:\Windows\Fonts", os.path.join(BASE_DIR, "assets", "fonts")]
+    for _cand in _win_candidates:
         if os.path.exists(_cand):
             FONTS_DIR = _cand
             break
