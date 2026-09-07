@@ -16,6 +16,12 @@ from datetime import datetime, date
 _IS_WINDOWS = platform.system().lower().startswith("win")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "assets", "backup_config.json")
+TOKEN_PATHS = [
+    os.path.expanduser("~/.config/cashier/github_token"),
+    os.path.expanduser("~/.config/prot/github_token"),
+    os.path.join(BASE_DIR, "assets", ".github_token"),
+    os.path.join(BASE_DIR, ".github_token"),
+]
 
 DEFAULT_CONFIG = {
     "enabled": False,
@@ -56,6 +62,63 @@ def save_backup_config(enabled, frequency, time_str, last_run=None):
         json.dump(data, f, ensure_ascii=False, indent=2)
     return data
 
+
+def _get_token_path():
+    for p in TOKEN_PATHS:
+        if os.path.exists(p):
+            return p
+    return TOKEN_PATHS[0]
+
+def load_github_token():
+    for p in TOKEN_PATHS:
+        try:
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    tok = f.read().strip()
+                if tok:
+                    return tok
+        except Exception:
+            continue
+    return None
+
+def save_github_token(token):
+    token = (token or "").strip().split()[0] if token else ""
+    if not token:
+        return False, "التوكن فارغ"
+    path = _get_token_path()
+    if not os.path.exists(os.path.dirname(path)):
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        except Exception:
+            pass
+    path = TOKEN_PATHS[0]
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(token + "\n")
+        os.chmod(path, 0o600)
+        try:
+            alt = TOKEN_PATHS[2]
+            os.makedirs(os.path.dirname(alt), exist_ok=True)
+            with open(alt, "w", encoding="utf-8") as f:
+                f.write(token + "\n")
+            os.chmod(alt, 0o600)
+        except Exception:
+            pass
+        return True, f"تم حفظ التوكن ✓ ({path})"
+    except Exception as e:
+        return False, f"فشل حفظ التوكن: {e}"
+
+def clear_github_token():
+    removed = []
+    for p in TOKEN_PATHS:
+        try:
+            if os.path.exists(p):
+                os.remove(p)
+                removed.append(p)
+        except Exception:
+            pass
+    return removed
 
 def _parse_date(s):
     try:
@@ -122,17 +185,52 @@ def do_git_backup(custom_message=None):
     except Exception as e:
         return False, f"خطأ commit: {e}"
 
+    token = load_github_token()
+    def _try_push_with_token(tok):
+        try:
+            r_remote = subprocess.run(["git", "config", "--get", "remote.origin.url"], cwd=cwd, capture_output=True, text=True, timeout=10)
+            remote_url = (r_remote.stdout or "").strip()
+            if not remote_url:
+                remote_url = "https://github.com/ABDelrahmanmohamed555/barcode.git"
+            if remote_url.startswith("git@"):
+                try:
+                    part = remote_url.split(":", 1)[1]
+                    remote_url = f"https://github.com/{part}"
+                except Exception:
+                    remote_url = "https://github.com/ABDelrahmanmohamed555/barcode.git"
+            if "github.com" in remote_url and tok:
+                if "@" not in remote_url.split("github.com")[0]:
+                    remote_url = remote_url.replace("https://", f"https://{tok}@")
+                try:
+                    br = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd, capture_output=True, text=True, timeout=10)
+                    branch = (br.stdout or "main").strip() or "main"
+                except Exception:
+                    branch = "main"
+                r = subprocess.run(["git", "push", remote_url, f"HEAD:{branch}"], cwd=cwd, capture_output=True, text=True, timeout=60)
+                return r
+            return subprocess.run(["git", "push"], cwd=cwd, capture_output=True, text=True, timeout=60)
+        except Exception as e:
+            return subprocess.CompletedProcess(args=["git","push"], returncode=1, stdout="", stderr=str(e))
+
     try:
         r3 = subprocess.run(["git", "push"], cwd=cwd, capture_output=True, text=True, timeout=60)
-        if r3.returncode != 0:
-            err = r3.stderr or r3.stdout
-            if "no configured push destination" in err.lower() or "could not read" in err.lower():
-                return False, f"فشل push (تأكد من إعداد GitHub لـ prot): {err[:300]}"
-            return False, f"فشل push (prot): {err[:500]}"
+        if r3.returncode == 0:
+            return True, f"تم الرفع بنجاح (prot) — {msg}"
+        err = r3.stderr or r3.stdout or ""
+        needs_token = any(x in err.lower() for x in ["could not read username", "authentication failed", "invalid username or password", "support for password authentication was removed", "403", "401"])
+        if needs_token and token:
+            r_tok = _try_push_with_token(token)
+            if r_tok.returncode == 0:
+                return True, f"تم الرفع بنجاح عبر التوكن (prot) — {msg}"
+            err2 = r_tok.stderr or r_tok.stdout or ""
+            return False, f"فشل push حتى مع التوكن (prot): {err2[:500]} — تأكد أن التوكن صحيح (ghp_...) وله صلاحية repo"
+        if "could not read" in err.lower() or "no configured push destination" in err.lower():
+            if token:
+                return False, f"فشل push (prot): {err[:300]} — جرّب التوكن المحفوظ"
+            return False, f"فشل push (prot): {err[:300]} — أدخل GitHub Token مرة واحدة من الإعدادات"
+        return False, f"فشل push (prot): {err[:500]}"
     except Exception as e:
         return False, f"خطأ push: {e}"
-
-    return True, f"تم الرفع بنجاح (prot) — {msg}"
 
 
 def install_cron(frequency=None, time_str=None):
@@ -231,7 +329,27 @@ def main():
     ap.add_argument("--install-cron", action="store_true", help="تثبيت cron")
     ap.add_argument("--remove-cron", action="store_true", help="إزالة cron")
     ap.add_argument("--message", help="رسالة commit مخصصة")
+    ap.add_argument("--set-token", help="حفظ GitHub Token لمرة واحدة (ghp_...)")
+    ap.add_argument("--clear-token", action="store_true", help="حذف التوكن المحفوظ")
+    ap.add_argument("--token-status", action="store_true", help="عرض حالة التوكن")
     args = ap.parse_args()
+
+    if args.set_token is not None:
+        ok, msg = save_github_token(args.set_token)
+        print(msg)
+        sys.exit(0 if ok else 1)
+    if args.clear_token:
+        removed = clear_github_token()
+        print(f"تم حذف التوكن من: {', '.join(removed) if removed else 'لا يوجد توكن'}")
+        sys.exit(0)
+    if args.token_status:
+        tok = load_github_token()
+        if tok:
+            masked = tok[:4] + "*"*(len(tok)-8) + tok[-4:] if len(tok) > 8 else "***"
+            print(f"التوكن محفوظ ✓ {masked} ({_get_token_path()})")
+        else:
+            print("لا يوجد توكن محفوظ — أدخل واحداً عبر --set-token أو من الإعدادات")
+        sys.exit(0)
 
     if args.install_cron:
         install_cron()
