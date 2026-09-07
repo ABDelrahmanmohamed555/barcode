@@ -12,7 +12,7 @@ except Exception:
     HAS_BARCODE = False
 
 
-#test22
+#test223
 
 def _get_font(size=14, bold=False):
     # جرب عدة مسارات للخطوط لضمان وجود Tajawal/Cairo حتى لو FONTS_DIR غير دقيق
