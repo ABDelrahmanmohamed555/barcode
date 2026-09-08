@@ -11,7 +11,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PHONE_JSON = os.path.join(os.path.dirname(BASE_DIR), "phone app", "products.json")
+PHONE_DIR = os.path.join(os.path.dirname(BASE_DIR), "phone app")
+PHONE_JSON = os.path.join(PHONE_DIR, "products.json")
+PHONE_VERSION_JSON = os.path.join(PHONE_DIR, "version.json")
 # ضمان وجود مسارات المشروع حتى لو شُغّل من venv أو cron
 for p in [os.path.dirname(BASE_DIR), BASE_DIR, "/home/kali/Desktop", "/home/kali/Desktop/cashier"]:
     if p not in sys.path:
@@ -48,6 +50,42 @@ def _cors_headers(handler):
     handler.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
     handler.send_header("Access-Control-Allow-Headers", "Content-Type")
     handler.send_header("Access-Control-Max-Age", "86400")
+
+def _mime_for(path):
+    if path.endswith(".html"): return "text/html; charset=utf-8"
+    if path.endswith(".js"): return "text/javascript; charset=utf-8"
+    if path.endswith(".css"): return "text/css; charset=utf-8"
+    if path.endswith(".json"): return "application/json; charset=utf-8"
+    if path.endswith(".png"): return "image/png"
+    if path.endswith(".jpg") or path.endswith(".jpeg"): return "image/jpeg"
+    if path.endswith(".zip"): return "application/zip"
+    if path.endswith(".apk"): return "application/vnd.android.package-archive"
+    return "application/octet-stream"
+
+def _serve_static(handler, filepath):
+    if not os.path.isfile(filepath):
+        handler._err("not found", 404)
+        return True
+    try:
+        # منع directory traversal
+        real_phone = os.path.realpath(PHONE_DIR)
+        real_file = os.path.realpath(filepath)
+        if not real_file.startswith(real_phone):
+            handler._err("forbidden", 403)
+            return True
+        with open(filepath, "rb") as f:
+            data = f.read()
+        handler.send_response(200)
+        _cors_headers(handler)
+        handler.send_header("Content-Type", _mime_for(filepath))
+        handler.send_header("Content-Length", str(len(data)))
+        handler.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        handler.end_headers()
+        handler.wfile.write(data)
+        return True
+    except Exception as e:
+        handler._err(str(e), 500)
+        return True
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -99,12 +137,62 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path in ("/", "/api", "/api/"):
-            body = json.dumps({"ok": True, "endpoints": ["/api/products", "/api/products?price_zero=1", "POST /api/products", "PATCH /api/products/<id>"]}, ensure_ascii=False).encode()
+            body = json.dumps({"ok": True, "endpoints": ["/api/products", "/api/products?price_zero=1", "POST /api/products", "PATCH /api/products/<id>", "/api/app_version", "/version.json", "/app/<file>", "/api/bundle"]}, ensure_ascii=False).encode()
             self.send_response(200)
             _cors_headers(self)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(body)
+            return
+
+        # --- OTA: نسخة التطبيق ---
+        if path in ("/api/app_version", "/version.json"):
+            fp = PHONE_VERSION_JSON
+            if not os.path.exists(fp):
+                # fallback بسيط
+                body = json.dumps({"version":"1.0.0","build":1,"files":{}}, ensure_ascii=False).encode()
+                self.send_response(200)
+                _cors_headers(self)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            return _serve_static(self, fp)
+
+        # --- OTA: ملفات التطبيق الثابتة /app/* و /updates/* ---
+        if path.startswith("/app/") or path.startswith("/updates/"):
+            # /app/app.js -> phone app/app.js
+            rel = path.split("/", 2)[-1] if "/" in path[1:] else ""
+            # منع .. 
+            rel = rel.replace("..", "").lstrip("/")
+            if not rel:
+                rel = "index.html"
+            fp = os.path.join(PHONE_DIR, rel)
+            return _serve_static(self, fp)
+
+        # خدمة مباشرة للملفات الجذرية (للتسهيل): /index.html /app.js /style.css /updater.js /version.json
+        if path in ("/index.html","/app.js","/style.css","/updater.js","/manifest.json","/icon.png","/products.json"):
+            fp = os.path.join(PHONE_DIR, path.lstrip("/"))
+            return _serve_static(self, fp)
+
+        # --- OTA: حزمة zip كاملة ---
+        if path == "/api/bundle":
+            # أنشئ zip مؤقت يحتوي phone app/www الملفات
+            import tempfile, zipfile, io
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                for fname in ["index.html","app.js","style.css","manifest.json","version.json","updater.js","icon.png"]:
+                    fp = os.path.join(PHONE_DIR, fname)
+                    if os.path.exists(fp):
+                        z.write(fp, fname)
+            data = buf.getvalue()
+            self.send_response(200)
+            _cors_headers(self)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", "attachment; filename=phone_app_update.zip")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
             return
 
         self._err("not found", 404)
@@ -214,7 +302,11 @@ def run(host=HOST, port=PORT):
     print(f"✓ Prot Sync API يعمل على http://{local_ip}:{port}")
     print(f"  - GET  http://{local_ip}:{port}/api/products")
     print(f"  - GET  http://{local_ip}:{port}/api/products?price_zero=1")
+    print(f"  - GET  http://{local_ip}:{port}/api/app_version  (للتحديث OTA)")
+    print(f"  - GET  http://{local_ip}:{port}/app/index.html  (ملفات التطبيق)")
+    print(f"  - GET  http://{local_ip}:{port}/api/bundle  (حزمة zip)")
     print(f"  - افتح phone app عبر http://{local_ip}:8000  (python3 -m http.server 8000 في phone app)")
+    print(f"  - أو عبر http://{local_ip}:{port}/app/index.html مباشرة (بدون سيرفر ثاني)")
     print("  اضغط Ctrl+C للإيقاف")
     server = ThreadedHTTPServer((host, port), Handler)
     try:
