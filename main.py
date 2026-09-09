@@ -55,6 +55,7 @@ class ProtWindow(ctk.CTk):
         self._clock_timer = None
         self._prot_backup_timer = None
         self._prot_updater_timer = None
+        self._realtime_timer = None
         self._editing_id = None
         self._auto_save_job = None
         self._auto_add_job = None
@@ -78,6 +79,7 @@ class ProtWindow(ctk.CTk):
             self._refresh_table()
         self.after(2500, self._start_prot_backup_scheduler)
         self.after(3000, self._start_prot_updater_scheduler)
+        self.after(4000, self._start_realtime_sync)
         self.bind("<Escape>", lambda e: self._logout())
         self.protocol("WM_DELETE_WINDOW", self._logout)
 
@@ -149,6 +151,16 @@ class ProtWindow(ctk.CTk):
                 self.after_cancel(self._prot_updater_timer)
             except Exception:
                 pass
+        if getattr(self, "_realtime_timer", None):
+            try:
+                self.after_cancel(self._realtime_timer)
+            except Exception:
+                pass
+        try:
+            from prot.realtime_sync import stop
+            stop()
+        except Exception:
+            pass
         super().destroy()
 
     def _logout(self):
@@ -622,7 +634,14 @@ class ProtWindow(ctk.CTk):
         self._toast(reshape_arabic("وضع التعديل"), COLORS["info"])
 
     def _schedule_auto_save(self, *_):
-        # حفظ تلقائي لأي إضافة/تعديل حتى لو السعر 0
+        # تم إيقاف الحفظ التلقائي أثناء الكتابة لمنع الريفريش — الحفظ الآن يدوي فقط عبر زر حفظ/حفظ التعديل
+        # نحتفظ فقط بتحديث معاينة الباركود
+        try:
+            self._auto_update_barcode_name()
+        except Exception:
+            pass
+        return
+        # الكود القديم للحفظ التلقائي معطّل لمنع الريفريش أثناء التعديل
         if getattr(self, '_editing_id', None):
             if getattr(self, '_auto_save_job', None):
                 try:
@@ -631,7 +650,6 @@ class ProtWindow(ctk.CTk):
                     pass
             self._auto_save_job = self.after(900, self._update_product)
         else:
-            # وضع الإضافة: يحفظ تلقائياً بعد اكتمال البيانات
             try:
                 name = self.name_entry.get().strip() if hasattr(self, 'name_entry') else ""
                 barcode = self.barcode_entry.get().strip() if hasattr(self, 'barcode_entry') else ""
@@ -1517,6 +1535,53 @@ class ProtWindow(ctk.CTk):
                     self._toast(reshape_arabic(f"خطأ: {e}"), COLORS["danger"])
             ctk.CTkSwitch(user_perm_frame, text=reshape_arabic("السماح للمستخدم العادي بطباعة الفاتورة"), font=FONT_BODY_BOLD, variable=self._user_invoice_var, command=_on_user_invoice_toggle, progress_color=COLORS["accent"], button_color=COLORS["text_white"], fg_color=COLORS["bg_input"], text_color=COLORS["text_light"]).pack(anchor="e", padx=14, pady=(0, 14))
 
+            # === كارت المزامنة اللحظية (Supabase + GitHub) ===
+            sync_frame = ctk.CTkFrame(container, fg_color=COLORS["bg_card"], corner_radius=10)
+            sync_frame.pack(fill="x", pady=(0, 12))
+            ctk.CTkLabel(sync_frame, text=reshape_arabic("المزامنة اللحظية - المنتجات بين الكمبيوتر والموبايل"), font=FONT_HEADER, text_color=COLORS["accent"]).pack(anchor="e", padx=14, pady=(12, 4))
+            ctk.CTkLabel(sync_frame, text=reshape_arabic("تزامن المنتجات والأسعار والكمية لحظياً عبر Supabase (سحابي لحظي) أو GitHub. يعمل تلقائياً كل 3 ثواني + عند أي تعديل."), font=FONT_SMALL, text_color=COLORS["text_light"], anchor="e", wraplength=440, justify="right").pack(fill="x", padx=14, pady=(0, 8))
+            # حالة Supabase
+            try:
+                from prot.supabase_sync import load_config as _load_supa, is_configured as _supa_ok, test_connection as _supa_test
+                _supa_cfg = _load_supa()
+                _supa_url = _supa_cfg.get("url","")
+                _supa_stat = "مهيأ ✓" if _supa_ok() else "غير مهيأ"
+                _supa_color = COLORS["success"] if _supa_ok() else COLORS["warning"]
+            except Exception:
+                _supa_url=""; _supa_stat="غير مهيأ"; _supa_color=COLORS["text_light"]
+            # حالة GitHub
+            try:
+                from prot.github_sync import get_token as _gh_tok
+                _gh_tok_val = _gh_tok()
+                _gh_stat = "مهيأ ✓" if _gh_tok_val else "غير مهيأ"
+                _gh_color = COLORS["success"] if _gh_tok_val else COLORS["text_light"]
+            except Exception:
+                _gh_stat="غير مهيأ"; _gh_color=COLORS["text_light"]
+            self.supa_status_label = ctk.CTkLabel(sync_frame, text=reshape_arabic(f"Supabase: {_supa_stat}  |  GitHub: {_gh_stat}"), font=FONT_SMALL, text_color=_supa_color, anchor="e", wraplength=440, justify="right")
+            self.supa_status_label.pack(fill="x", padx=14, pady=(0, 8))
+            if _supa_url:
+                ctk.CTkLabel(sync_frame, text=_supa_url[:50], font=("Consolas",9), text_color=COLORS["text_light"], anchor="e").pack(fill="x", padx=14, pady=(0, 4))
+            # حقول الإدخال
+            ctk.CTkLabel(sync_frame, text=reshape_arabic("Supabase URL (https://xxx.supabase.co)"), font=FONT_SMALL, text_color=COLORS["text_light"], anchor="e").pack(fill="x", padx=14, pady=(0, 4))
+            self.supa_url_entry = ctk.CTkEntry(sync_frame, font=FONT_SMALL, height=38, corner_radius=6, fg_color=COLORS["bg_input"], text_color="white", border_color=COLORS["border"], placeholder_text="https://xxx.supabase.co")
+            if _supa_url: self.supa_url_entry.insert(0, _supa_url)
+            self.supa_url_entry.pack(fill="x", padx=14, pady=(0, 8))
+            ctk.CTkLabel(sync_frame, text=reshape_arabic("Supabase anon key"), font=FONT_SMALL, text_color=COLORS["text_light"], anchor="e").pack(fill="x", padx=14, pady=(0, 4))
+            try:
+                _supa_key = _load_supa().get("key","")
+            except: _supa_key=""
+            self.supa_key_entry = ctk.CTkEntry(sync_frame, font=FONT_SMALL, height=38, corner_radius=6, fg_color=COLORS["bg_input"], text_color="white", border_color=COLORS["border"], placeholder_text="eyJ...", show="*")
+            if _supa_key: self.supa_key_entry.insert(0, _supa_key)
+            self.supa_key_entry.pack(fill="x", padx=14, pady=(0, 8))
+            btn_supa_row = ctk.CTkFrame(sync_frame, fg_color="transparent")
+            btn_supa_row.pack(fill="x", padx=14, pady=(0, 8))
+            ctk.CTkButton(btn_supa_row, text=reshape_arabic("حفظ Supabase"), font=FONT_SMALL, width=110, height=36, fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], text_color="white", command=self._save_supabase_config).pack(side="right", padx=(0,6))
+            ctk.CTkButton(btn_supa_row, text=reshape_arabic("مسح"), font=FONT_SMALL, width=70, height=36, fg_color="transparent", border_width=1, border_color=COLORS["border"], text_color=COLORS["text_light"], command=self._clear_supabase_config).pack(side="right", padx=(0,6))
+            ctk.CTkButton(btn_supa_row, text=reshape_arabic("اختبار"), font=FONT_SMALL, width=70, height=36, fg_color=COLORS["info"], hover_color=COLORS["info_hover"], text_color="white", command=self._test_supabase).pack(side="right")
+            ctk.CTkButton(sync_frame, text=reshape_arabic("⚡ مزامنة الآن (دفع وسحب)"), font=FONT_BODY_BOLD, height=42, fg_color=COLORS["success"], hover_color=COLORS["success_hover"], text_color="white", command=self._force_sync_now).pack(fill="x", padx=14, pady=(0, 6))
+            ctk.CTkButton(sync_frame, text=reshape_arabic("⇄ سحب من السحابة فقط"), font=FONT_SMALL, height=36, fg_color="transparent", border_width=1, border_color=COLORS["border"], text_color=COLORS["text_light"], command=self._pull_sync_now).pack(fill="x", padx=14, pady=(0, 12))
+            ctk.CTkLabel(sync_frame, text=reshape_arabic("💡 أنشئ مشروع مجاني على supabase.com → Table Editor → أنشئ جدول products → انسخ URL و anon key → الصق هنا. أو اتركه فارغاً لاستخدام GitHub فقط (أبطأ 3 ثواني)."), font=FONT_SMALL, text_color=COLORS["text_light"], anchor="e", wraplength=440, justify="right").pack(fill="x", padx=14, pady=(0, 8))
+
             # كارت النسخ الاحتياطي على GitHub (prot المنفصل)
             try:
                 from prot.git_backup import load_backup_config as _load_bak_cfg
@@ -1891,6 +1956,81 @@ class ProtWindow(ctk.CTk):
         except Exception as e:
             self.prot_backup_token_status.configure(text=reshape_arabic(f"خطأ: {e}"), text_color=COLORS["danger"])
 
+    # === دوال المزامنة اللحظية Supabase ===
+    def _save_supabase_config(self):
+        url = self.supa_url_entry.get().strip() if hasattr(self,'supa_url_entry') else ""
+        key = self.supa_key_entry.get().strip() if hasattr(self,'supa_key_entry') else ""
+        if not url or not key:
+            self._toast(reshape_arabic("أدخل URL و Key"), COLORS["warning"])
+            return
+        try:
+            from prot.supabase_sync import save_config, test_connection
+            save_config(url, key)
+            ok, msg = test_connection()
+            self.supa_status_label.configure(text=reshape_arabic(f"Supabase: {msg}"), text_color=COLORS["success"] if ok else COLORS["danger"])
+            self._toast(reshape_arabic(msg), COLORS["success"] if ok else COLORS["danger"])
+            if ok:
+                # فعل realtime فوراً
+                try:
+                    from prot.realtime_sync import force_push
+                    force_push()
+                except Exception: pass
+        except Exception as e:
+            self._toast(reshape_arabic(f"خطأ: {e}"), COLORS["danger"])
+    def _clear_supabase_config(self):
+        try:
+            from prot.supabase_sync import save_config
+            save_config("", "")
+            self.supa_url_entry.delete(0,"end")
+            self.supa_key_entry.delete(0,"end")
+            self.supa_status_label.configure(text=reshape_arabic("Supabase: غير مهيأ"), text_color=COLORS["text_light"])
+            self._toast(reshape_arabic("تم مسح إعدادات Supabase"), COLORS["warning"])
+        except Exception as e:
+            self._toast(reshape_arabic(f"خطأ: {e}"), COLORS["danger"])
+    def _test_supabase(self):
+        self.supa_status_label.configure(text=reshape_arabic("جاري الاختبار..."), text_color=COLORS["text_light"])
+        def worker():
+            try:
+                from prot.supabase_sync import test_connection
+                ok, msg = test_connection()
+                self.after(0, lambda: self.supa_status_label.configure(text=reshape_arabic(f"Supabase: {msg}"), text_color=COLORS["success"] if ok else COLORS["danger"]))
+                self.after(0, lambda: self._toast(reshape_arabic(msg), COLORS["success"] if ok else COLORS["danger"]))
+            except Exception as e:
+                self.after(0, lambda: self.supa_status_label.configure(text=reshape_arabic(f"خطأ: {e}"), text_color=COLORS["danger"]))
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+    def _force_sync_now(self):
+        self.supa_status_label.configure(text=reshape_arabic("جاري المزامنة..."), text_color=COLORS["info"])
+        def worker():
+            try:
+                from prot.realtime_sync import force_push, force_pull
+                n_push = force_push()
+                time.sleep(0.5)
+                n_pull = force_pull()
+                msg = f"تم دفع {n_push} وسحب {n_pull} منتج ✓"
+                self.after(0, lambda: self.supa_status_label.configure(text=reshape_arabic(msg), text_color=COLORS["success"]))
+                self.after(0, lambda: self._toast(reshape_arabic(msg), COLORS["success"]))
+                self.after(0, self._refresh_table)
+            except Exception as e:
+                self.after(0, lambda: self.supa_status_label.configure(text=reshape_arabic(f"خطأ: {e}"), text_color=COLORS["danger"]))
+        import threading, time
+        threading.Thread(target=worker, daemon=True).start()
+    def _pull_sync_now(self):
+        self.supa_status_label.configure(text=reshape_arabic("جاري السحب..."), text_color=COLORS["info"])
+        def worker():
+            try:
+                from prot.realtime_sync import force_pull
+                n = force_pull()
+                msg = f"تم سحب ودمج {n} منتج ✓" if n>0 else "لا يوجد جديد"
+                self.after(0, lambda: self.supa_status_label.configure(text=reshape_arabic(msg), text_color=COLORS["success"]))
+                self.after(0, lambda: self._toast(reshape_arabic(msg), COLORS["success"] if n>0 else COLORS["text_light"]))
+                if n>0:
+                    self.after(0, self._refresh_table)
+            except Exception as e:
+                self.after(0, lambda: self.supa_status_label.configure(text=reshape_arabic(f"خطأ: {e}"), text_color=COLORS["danger"]))
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
     def _on_prot_updater_toggle(self):
         enabled = self.prot_updater_enabled_var.get()
         if enabled:
@@ -2005,6 +2145,69 @@ class ProtWindow(ctk.CTk):
             threading.Thread(target=worker, daemon=True).start()
         except Exception as e:
             print("prot backup check err", e)
+
+    def _start_realtime_sync(self):
+        """تشغيل المزامنة اللحظية مع Supabase/GitHub كل 3 ثواني + refresh الجدول"""
+        try:
+            from prot.realtime_sync import start as rt_start
+            rt_start(interval=3)
+            print("[Realtime] ✓ خدمة المزامنة اللحظية بدأت")
+            # مهمة تحديث الجدول كل 3 ثواني — تتوقف أثناء التعديل/الإضافة حتى لا تقاطع الكتابة
+            def _is_editing_now():
+                # لو في وضع تعديل منتج موجود — أوقف الريفريش
+                if getattr(self, '_editing_id', None) is not None:
+                    return True
+                # لو مؤشر الكتابة داخل فورم الإضافة/التعديل — أوقف
+                try:
+                    focused = self.focus_get()
+                    widgets = []
+                    if hasattr(self, 'name_entry'):
+                        widgets.append(self.name_entry)
+                        try: widgets.append(self.name_entry._entry)
+                        except: pass
+                    if hasattr(self, 'barcode_entry'): widgets.append(self.barcode_entry)
+                    if hasattr(self, 'price_entry'): widgets.append(self.price_entry)
+                    if hasattr(self, 'stock_entry'): widgets.append(self.stock_entry)
+                    if hasattr(self, 'desc_entry'):
+                        widgets.append(self.desc_entry)
+                        try: widgets.append(self.desc_entry._entry)
+                        except: pass
+                    if focused in widgets:
+                        return True
+                except Exception:
+                    pass
+                return False
+
+            def _auto_refresh():
+                try:
+                    if _is_editing_now():
+                        # أثناء الكتابة لا تحدث الجدول — أعد الجدولة فقط
+                        self._realtime_timer = self.after(3000, _auto_refresh)
+                        return
+                    # فقط لو الأدمن يرى الجدول
+                    if self.user.get("role")=="admin" and hasattr(self, 'scroll'):
+                        try:
+                            from prot.db.database import count_products
+                            cur = count_products()
+                            if not hasattr(self, '_last_count'): self._last_count = cur
+                            if cur != self._last_count:
+                                self._refresh_table()
+                                self._last_count = cur
+                            else:
+                                if not hasattr(self, '_refresh_tick'): self._refresh_tick=0
+                                self._refresh_tick+=1
+                                if self._refresh_tick>=4:
+                                    self._refresh_table()
+                                    self._refresh_tick=0
+                        except Exception:
+                            self._refresh_table()
+                except Exception: pass
+                self._realtime_timer = self.after(3000, _auto_refresh)
+            _auto_refresh()
+        except Exception as e:
+            print(f"[Realtime] start fail: {e}")
+            # إعادة المحاولة بعد 10 ثواني
+            self.after(10000, self._start_realtime_sync)
 
     def _start_prot_updater_scheduler(self):
         try:

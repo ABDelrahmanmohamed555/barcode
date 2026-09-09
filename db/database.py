@@ -290,6 +290,34 @@ def _export_phone_app():
     except Exception:
         pass
 
+def _notify_realtime():
+    try:
+        import threading as _th
+        def _bg():
+            try:
+                # Realtime push في الخلفية
+                import importlib.util as _ilu, pathlib as _pl, os as _os
+                spec = _ilu.spec_from_file_location("realtime_sync", _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), "realtime_sync.py"))
+                # جرب المسارين
+                for cand in [os.path.join(os.path.dirname(os.path.dirname(__file__)), "realtime_sync.py"), os.path.join(os.path.dirname(__file__), "..", "realtime_sync.py")]:
+                    if os.path.exists(cand):
+                        spec = _ilu.spec_from_file_location("realtime_sync", cand)
+                        break
+                if spec and spec.loader:
+                    mod = _ilu.module_from_spec(spec)
+                    spec.loader.exec_module(mod)
+                    if hasattr(mod, "notify_local_change"):
+                        mod.notify_local_change()
+                        return
+                # fallback: حاول استيراد مباشر
+                from prot.realtime_sync import notify_local_change as _n
+                _n()
+            except Exception:
+                pass
+        _th.Thread(target=_bg, daemon=True).start()
+    except Exception:
+        pass
+
 def add_product(name, category="عام", price=0, stock=0, description="", barcode=None, image_path="", barcode_path=""):
     if not barcode:
         barcode = get_unique_barcode()
@@ -306,10 +334,92 @@ def add_product(name, category="عام", price=0, stock=0, description="", barco
         conn.close()
         try: _export_phone_app()
         except: pass
+        _notify_realtime()
         return pid, barcode
     except sqlite3.IntegrityError as e:
         conn.close()
         raise ValueError(f"الباركود موجود مسبقاً: {barcode}") from e
+
+def upsert_product_from_remote(remote):
+    """إدراج أو تحديث منتج قادم من السحابة مع الحفاظ على id والـ barcode كمفتاح"""
+    # remote: dict من Supabase/GitHub
+    try:
+        rid = int(remote.get("id")) if remote.get("id") is not None else None
+        name = (remote.get("name") or "").strip()
+        barcode = (remote.get("barcode") or "").strip()
+        if not name or not barcode:
+            return False
+        category = (remote.get("category") or "عام").strip() or "عام"
+        price = float(remote.get("price", 0) or 0)
+        stock = int(float(remote.get("stock", 0) or 0))
+        desc = (remote.get("description") or remote.get("desc") or "").strip()
+        created_at = remote.get("created_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        updated_at = remote.get("updated_at") or created_at
+        # تحقق هل موجود محلياً بالباركود
+        existing = get_product_by_barcode(barcode)
+        if existing:
+            # لو موجود بنفس الباركود — حدثه (حتى لو id مختلف، حافظ على المحلي id لكن حدث البيانات)
+            # لو السحابي أحدث أو السعر/المخزون مختلف
+            rTime = updated_at or ""
+            lTime = existing.get("updated_at") or existing.get("created_at") or ""
+            # قارن أيضاً القيم
+            if rTime > lTime or float(existing.get("price",0))!=price or int(existing.get("stock",0))!=stock or existing.get("name")!=name:
+                # حدث بدون تغيير id المحلي (لتجنب تضارب المفتاح)
+                conn = get_connection()
+                cur = conn.cursor()
+                try:
+                    cur.execute("""
+                        UPDATE products SET name=?, category=?, price=?, stock=?, description=?, updated_at=?
+                        WHERE barcode=?
+                    """, (name, category, price, stock, desc, updated_at, barcode))
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                finally:
+                    conn.close()
+                try: _export_phone_app()
+                except: pass
+                return True
+            return False
+        # غير موجود بالباركود — حاول إدراج بنفس id السحابي للحفاظ على التطابق
+        if rid is not None:
+            conn = get_connection()
+            cur = conn.cursor()
+            try:
+                cur.execute("""
+                    INSERT INTO products (id, name, barcode, category, price, stock, description, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (rid, name, barcode, category, price, stock, desc, created_at, updated_at))
+                conn.commit()
+                conn.close()
+                try: _export_phone_app()
+                except: pass
+                return True
+            except sqlite3.IntegrityError as e:
+                conn.close()
+                # id متضارب (مثلاً id 999 موجود لمنتج آخر) — أدخل بدون id
+                if "UNIQUE" in str(e) and "id" in str(e).lower():
+                    try:
+                        return bool(add_product(name, category, price, stock, desc, barcode)[0])
+                    except Exception:
+                        return False
+                # باركود متكرر رغم أننا فحصنا — حدثه
+                if "barcode" in str(e).lower():
+                    return upsert_product_from_remote(remote)
+                return False
+            except Exception:
+                try: conn.close()
+                except: pass
+                return False
+        else:
+            # بدون id — أدخل عادي
+            try:
+                add_product(name, category, price, stock, desc, barcode)
+                return True
+            except Exception:
+                return False
+    except Exception:
+        return False
 
 
 def get_all_products(search="", category=""):
@@ -390,6 +500,7 @@ def update_product(pid, name=None, category=None, price=None, stock=None, descri
         conn.close()
         try: _export_phone_app()
         except: pass
+        _notify_realtime()
         return True
     except sqlite3.IntegrityError:
         conn.close()
@@ -415,6 +526,7 @@ def delete_product(pid):
     if ok:
         try: _export_phone_app()
         except: pass
+        _notify_realtime()
     return ok
 
 

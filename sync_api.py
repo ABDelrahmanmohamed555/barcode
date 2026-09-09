@@ -11,7 +11,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# prot → phone app بجانب Desktop
 PHONE_DIR = os.path.join(os.path.dirname(BASE_DIR), "phone app")
+# تأكد من المسار الصحيح
+if not os.path.exists(os.path.join(PHONE_DIR, "products.json")):
+    for cand in ["/home/kali/Desktop/phone app", os.path.join(BASE_DIR, "..", "phone app"), os.path.join(os.path.dirname(BASE_DIR), "phone app")]:
+        if os.path.exists(os.path.join(cand, "products.json")):
+            PHONE_DIR = os.path.abspath(cand)
+            break
 PHONE_JSON = os.path.join(PHONE_DIR, "products.json")
 PHONE_VERSION_JSON = os.path.join(PHONE_DIR, "version.json")
 # ضمان وجود مسارات المشروع حتى لو شُغّل من venv أو cron
@@ -21,11 +28,28 @@ for p in [os.path.dirname(BASE_DIR), BASE_DIR, "/home/kali/Desktop", "/home/kali
 
 def _export_local():
     # مزامنة محلية للبرمجة: يكتب DB إلى phone app/products.json (يعمل حتى بدون شبكة)
+    # + حل جذري: يرفع تلقائياً إلى GitHub لو توفر token (يعمل عبر الإنترنت حتى لو اللابتوب مطفي لاحقاً)
     try:
         rows = get_all_products()
         os.makedirs(os.path.dirname(PHONE_JSON), exist_ok=True)
         with open(PHONE_JSON, "w", encoding="utf-8") as f:
             json.dump(rows, f, ensure_ascii=False, indent=2)
+        # رفع سحابي في الخلفية (لا يوقف السيرفر لو فشل)
+        try:
+            import threading
+            def _push():
+                try:
+                    import importlib.util
+                    spec = importlib.util.spec_from_file_location("github_sync", os.path.join(BASE_DIR, "github_sync.py"))
+                    mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(mod)
+                    # دفع بدون انتظار
+                    mod.push_products_to_github(rows, message="auto sync products")
+                except Exception:
+                    pass
+            threading.Thread(target=_push, daemon=True).start()
+        except Exception:
+            pass
     except Exception:
         pass
 
