@@ -2181,26 +2181,32 @@ class ProtWindow(ctk.CTk):
             def _auto_refresh():
                 try:
                     if _is_editing_now():
-                        # أثناء الكتابة لا تحدث الجدول — أعد الجدولة فقط
                         self._realtime_timer = self.after(3000, _auto_refresh)
                         return
-                    # فقط لو الأدمن يرى الجدول
                     if self.user.get("role")=="admin" and hasattr(self, 'scroll'):
                         try:
-                            from prot.db.database import count_products
-                            cur = count_products()
-                            if not hasattr(self, '_last_count'): self._last_count = cur
-                            if cur != self._last_count:
+                            from prot.db.database import get_all_products
+                            import hashlib, json as _js
+                            rows = get_all_products()
+                            # هاش سريع للمحتوى — يحدث فقط لو تغير فعلياً (يمنع الوميض)
+                            h = hashlib.md5(_js.dumps(rows, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+                            if not hasattr(self, '_last_hash'):
+                                self._last_hash = h
+                                # أول مرة لا حاجة لتحديث
+                            elif h != self._last_hash:
+                                # احفظ مكان السكرول قبل التحديث
+                                try:
+                                    y = self.scroll._parent_canvas.yview()[0] if hasattr(self.scroll, '_parent_canvas') else 0
+                                except: y = 0
                                 self._refresh_table()
-                                self._last_count = cur
-                            else:
-                                if not hasattr(self, '_refresh_tick'): self._refresh_tick=0
-                                self._refresh_tick+=1
-                                if self._refresh_tick>=4:
-                                    self._refresh_table()
-                                    self._refresh_tick=0
+                                self._last_hash = h
+                                # حاول إرجاع السكرول
+                                try:
+                                    if hasattr(self.scroll, '_parent_canvas'):
+                                        self.after(50, lambda: self.scroll._parent_canvas.yview_moveto(y))
+                                except: pass
                         except Exception:
-                            self._refresh_table()
+                            pass
                 except Exception: pass
                 self._realtime_timer = self.after(3000, _auto_refresh)
             _auto_refresh()
